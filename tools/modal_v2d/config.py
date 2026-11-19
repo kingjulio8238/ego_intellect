@@ -90,6 +90,27 @@ IMAGE_PATH_PREFIX = {RG_IMAGE: ISAAC_BIN}
 # FoundationPose TensorRT engines are arch-specific, so keep module GPUs on one type too.
 RG_GPU = os.environ.get("V2D_MODAL_RG_GPU", "L40S")
 MODULE_GPU = os.environ.get("V2D_MODAL_MODULE_GPU", "L40S")
+# A comma-separated value is a Modal GPU fallback list, e.g. "L40S,H100,A100-80GB": Modal takes
+# the first type with capacity (measured: falls back within ~3 s when the preferred type has
+# none, 2026-11-19). Every listed type must pass the numerics gate (docs/pipeline/OPTIMIZATION.md);
+# A100-40GB is excluded: SAM3D peaks at 35+ GiB.
+
+
+# Per-image override, JSON {"v2d_hamer": "L40S,A10G", ...} (memory and the numerics gate decide
+# which types an image may use; peak GPU memory: SAM3D 35 GiB, gsplat 20, FoundationPose 19,
+# MoGe 13, the rest <= 6).
+GPU_PER_IMAGE: dict[str, str] = {
+    str(k): str(v) for k, v in __import__("json").loads(os.environ.get("V2D_MODAL_GPU_PER_IMAGE") or "{}").items()
+}
+
+
+def gpu_spec(value: str):
+    types = [part.strip() for part in value.split(",") if part.strip()]
+    return types if len(types) > 1 else types[0]
+
+
+def gpu_label(value: str) -> str:
+    return value.split(",")[0].strip()  # the preferred type (cost estimates)
 # Idle seconds before a module container is released. 120 (was 60) so a container warmed
 # by reconstruct --fast (`docker pull`) is still up when its call arrives (~$0.03/idle min, L40S).
 MODULE_SCALEDOWN_S = int(os.environ.get("V2D_MODAL_SCALEDOWN_S", "120"))
@@ -106,6 +127,12 @@ SCALEDOWN_PER_IMAGE: dict[str, int] = {
 # the GPU cap (newacc probe: 5 containers up, GeoCalib 87 s) and one waited 15.4 min
 # (final2 MoGe). A hedge started at 30 s typically runs within ~5 s. 0 disables.
 CLAIM_DICT = "v2d-claims"
+# GPU type(s) of the hedge twins. Default L40S, like the primaries: outputs on another GPU
+# architecture differ beyond the same-host stock noise floor (gate 2026-11-19: all-H100 and
+# all-A100 runs fail hand metrics; with the hand chain pinned to L40S, H100 elsewhere still
+# shifts FoundationPose's discrete scale search by 2% via 0.02%-level MoGe depth differences).
+# Opt in with e.g. "L40S,H100,A100-80GB" once that variance is accepted (OPTIMIZATION.md).
+HEDGE_GPU = os.environ.get("V2D_MODAL_HEDGE_GPU", "L40S")  # comma list allowed, as for MODULE_GPU
 # Batch mode GPU slots: a token queue (one partition per batch) that every GPU module call
 # takes a token from before it starts and returns after. Modal's Starter plan allows 10
 # concurrent GPUs per workspace, idle (scaledown) containers included; past that, new

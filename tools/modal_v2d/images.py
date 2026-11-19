@@ -141,13 +141,15 @@ OPEN3D_COMPAT = (
 # SAM3D renders through gsplat, which JIT-compiles its CUDA extension on first use: 65-75 s
 # inside every SAM3D call (fastrecon P-sam3d profile; the per-call volume cache never hit,
 # since ninja sees image-layer sources newer than the cached objects). Compile once at image
-# build, for the GPU the module functions run on, and point torch at it. Same sources and
-# flags as the runtime build, so the kernels are the same.
+# build and point torch at it. Same sources and flags as the runtime build, so the kernels
+# are the same. Built for every architecture the module images target (A100 8.0, A10G 8.6,
+# L40S 8.9, H100 9.0), so hedged calls can run on another GPU type (batch mode).
 GSPLAT_JIT_IMAGES = {"v2d_sam3d"}
-GSPLAT_PREBUILD_ENV = {"TORCH_EXTENSIONS_DIR": "/opt/torch_extensions", "TORCH_CUDA_ARCH_LIST": "8.9"}
+GSPLAT_ARCHS = "8.0;8.6;8.9;9.0"
+GSPLAT_PREBUILD_ENV = {"TORCH_EXTENSIONS_DIR": "/opt/torch_extensions", "TORCH_CUDA_ARCH_LIST": GSPLAT_ARCHS}
 GSPLAT_PREBUILD = (
     "mkdir -p /opt/torch_extensions && cd /tmp && "
-    "TORCH_EXTENSIONS_DIR=/opt/torch_extensions TORCH_CUDA_ARCH_LIST=8.9 "
+    f"TORCH_EXTENSIONS_DIR=/opt/torch_extensions TORCH_CUDA_ARCH_LIST='{GSPLAT_ARCHS}' "
     "python -c 'from gsplat.cuda._backend import _C; assert _C is not None; print(\"gsplat_cuda prebuilt\")'"
 )
 
@@ -219,7 +221,7 @@ def module_image(image_name: str) -> modal.Image:
     # Source-independent fixes go before the sources, so they stay cached too.
     image = image.run_commands(BROTLI_COMPAT, OPEN3D_COMPAT)
     if image_name in GSPLAT_JIT_IMAGES:
-        image = image.run_commands(GSPLAT_PREBUILD, gpu=C.MODULE_GPU).env(GSPLAT_PREBUILD_ENV)
+        image = image.run_commands(GSPLAT_PREBUILD, gpu="L40S").env(GSPLAT_PREBUILD_ENV)  # fixed: kernels target GSPLAT_ARCHS whatever the builder GPU
     for instruction in instructions[first_copy:]:
         # Same build context as docker/build.py; Modal honours modules/.dockerignore.
         image = image.dockerfile_commands([instruction], context_dir=MODULES)

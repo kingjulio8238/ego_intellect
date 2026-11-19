@@ -8,7 +8,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 
 | Rank | Stage | Why here | Status |
 |---|---|---|---|
-| 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (round 1)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip |
+| 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (rounds 1–2)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip; sharding across workspaces, preemption-safe |
 | 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | Todo |
 | 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | Todo |
 | 4 | Retarget (3.0 min) | Next-largest existing stage | Todo |
@@ -79,7 +79,58 @@ encoded the same way agree with each other within (or at the edge of) the stock 
 | F7 | Shared-container overheads: every call rewrote the sync index of every clip; journal writes failed during another clip's volume reload | dirty-only partition saves; journal write retries |
 | F8 | Long-running control containers get preempted, and Modal restarts the same input | b4: preempted at 10 min. Fixed: `init` skipped when the run exists, lock taken over by the same input; the pipeline resumes through its skip-if-done steps |
 | F9 | Keeping the next call's model preloaded in a reused container works | same container, second call: SAM3D exec 98.6→78.7 s, FoundationPose scale 96.7→90.6 s |
+| F11 | **Modal GPU fallback lists fall back within ~3 s.** Which type is short changes by the hour and by workspace (13:57: L40S scarce, H100 3 s; 15:10 on credited: H100 110–200 s, L40S and A100-40GB 3 s; 15:20: A100-80GB minutes) | function with `gpu=["H100","A100-80GB","L40S","A100-40GB"]`: 4/4 started in 3.0–3.1 s on A100-40GB/L40S while H100-only took 196 s |
 | F10 | A local `__pycache__` under `reconstruction/modules` changes all 12 module images' build context (`.dockerignore` only ignores one level) → full rebuild + cold loads | launch from a clean snapshot; fix is in the todo list |
+
+### Round 2: GPU-type flexibility, numerics gate, workspaces (2026-11-19)
+
+**Gate: can a module run on another GPU type?** Seeded tissue_box clip (stock calibration, as
+final2), bundle gated against stock3:
+
+| Run | GPU per module | Camera / object | Hands | Verdict |
+|---|---|---|---|---|
+| b3_tbseed | all L40S | pass | pass (hand rot 0.19°, scale 0.0011, betas 0.042) | PASS |
+| h1 | all H100 | pass | **fail**: hand rot 1.73° (tol 0.35), fingers 2.9°, scale 0.0096, betas 0.070 | FAIL |
+| h2 | all A100-80GB | pass | **fail**: hand rot 1.85°, fingers 3.1°, scale 0.0114, betas 0.078 | FAIL |
+| h3 | hand chain + calibration L40S, rest H100 | pass | rot 0.20° pass; **scale 0.0119, betas 0.086 fail** | FAIL |
+| h4 | hand chain + calibration L40S, rest A100-80GB | pass | pass (rot 0.19°, scale 0.0053, betas 0.044) — but FoundationPose's scale search landed at 1.067 vs 1.164 on L40S; gsplat corrected it this time | PASS (1 sample; same instability as h3) |
+
+Why (isolated per stage, H100 vs L40S on identical inputs): the hand chain is bit-identical
+run to run on L40S, but on H100 WiLoR's detection moves by 0.002, SAM2's hand prompt masks by
+1.3 % of pixels, and HaMeR's tracks cascade from there. With the hand chain on L40S, MoGe's depth
+on H100 differs by only 0.02 % (p95), yet FoundationPose's discrete scale search lands 2 % away
+(1.139 vs 1.164); replaying that FoundationPose call on L40S with the H100 inputs gives the same
+1.139, so FoundationPose itself is arch-stable and the flip comes from its input. **Decision
+(user, 2026-11-19): keep the strict bar → every module stays on L40S.** The fallback machinery
+ships switched off (`V2D_MODAL_MODULE_GPU`, `V2D_MODAL_GPU_PER_IMAGE`, `V2D_MODAL_HEDGE_GPU`).
+Note the strict bar is tighter than stock itself across machines: AnyCalib's re-encode depends
+on the host core count and moves hand rotation by 3.4°.
+
+H100 is not faster for this pipeline (exec per call vs L40S: MoGe 29 vs 41 s, gsplat ~140 vs
+~140 s, FoundationPose 72 vs 70 s, SAM3D 106 vs ~90 s) and costs 2× per hour.
+
+**Workspaces:** `bootstrap_workspace.py` prepared credited and juliansaks from sales-32662
+(secret, weights copied and md5-verified: 573/573 identical, 14/14 images built, warm probe).
+
+**b5: production config, sharded over two fresh workspaces, with an injected preemption.**
+8 clips (6 tissue_box incl. one seeded, 2 airplane), `batch_shard.py` → credited 5 + juliansaks 3;
+L40S only, keep-warm models (240 s scaledown on model images, 20 s elsewhere), hedges after
+30 s. Partway through, the credited control container was stopped (`modal container stop`,
+what a Modal preemption does).
+
+| Shard | Clips ok | Makespan | Start wait p50 / p95 | Warm-model hits | Notes |
+|---|---|---|---|---|---|
+| credited | 4/5 | 22.0 min (incl. preemption) | 4.5 s / 157 s | 13 of 32 model calls | restart skipped `init`, resumed every clip; b5_tbseed gate **PASS** after resume; b5_ap1 failed: video corrupted by the duplicate-hedge bug below (fixed) |
+| juliansaks | 3/3 | 19.3 min | 10.9 s / 209 s | 3 of 21 | |
+| combined | 7/8 | 24 min wall for 8 clips on 2 workspaces | | | ~17.5 good clips/h across the two |
+
+**Bugs found and fixed in round 2:**
+- Hedged call ran twice: the claim was deleted when the call finished, and the cancelled
+  primary started 31 s later anyway. Its orphaned AnyCalib encode then wrote into the next
+  call's mount and corrupted another clip's video (b5_ap1). Fixed: claims stay as tombstones;
+  a worker kills its command's whole process group when its input is cancelled.
+- Bootstrap: Modal client profile must be pinned before import; create the state volume
+  before uploading inputs; never edit a build snapshot while images build from it.
 
 ### What was built (`tools/modal_v2d`)
 
@@ -112,19 +163,17 @@ non-model images in throughput mode, keep-warm models (F9), and more workspaces 
 Same method as reconstruct: profile → isolate each call → smoke levers in parallel against
 recorded inputs → gate against stock → one e2e. Ordered by the ranking above.
 
-**1b. Batch / GPU scheduling, round 2** (the remaining throughput is here: F2)
-- [ ] GPU-type flexibility: send hedges to an H100 twin instead of a second L40S pool (H100
-      started in 3–5 s, 8/8, while L40S waited up to 9 min; H100 is $3.95/h vs $1.95 but faster). Module images already compile
-      for sm 8.0/8.6/8.9/9.0; FoundationPose TRT engines are already per-sm files; change
-      `GSPLAT_PREBUILD` from arch 8.9 to `8.0 8.6 8.9 9.0` (rebuilds SAM3D + gsplat images).
-- [ ] Numerics gate per module on A100 vs L40S (replay harness: each call on both, compare
-      with stock-vs-stock spread), then enable the fallback only where it passes.
-- [ ] Rerun b4 (2 clips) to validate preemption resume + keep-warm models in a real batch.
-- [ ] Throughput mode: 10–20 s scaledown for images without a model to keep warm; measure
-      budget utilization (b3: ~30 % of the 9-GPU budget was execution).
-- [ ] Workspace bootstrap (images, md5-verified weights, one warm load per image) so
-      `batch_shard.py` can spread a batch over every workspace with credit
-      (credited, juliansaks, julian-41138 have $13–27 headroom).
+**1b. Batch / GPU scheduling, round 2 — done (see Round 2 above)**
+- [x] GPU-type flexibility built (fallback lists, per-image GPU types, hedge GPU type,
+      multi-arch gsplat prebuild, per-arch extension caches); **off by default** after the gate.
+- [x] Numerics gate on H100 and A100-80GB: hands and object scale move beyond the strict bar;
+      L40S only (user decision, 2026-11-19).
+- [x] Preemption resume and keep-warm models validated in a real sharded batch (b5).
+- [x] Short scaledown for non-model images (20 s) in b5.
+- [x] Workspace bootstrap: credited and juliansaks prepared and used.
+- [ ] Open: re-run b5_ap1 (needs credit: credited $21.6, juliansaks $23.2 of the $25 line).
+- [ ] Open, only if the bar is relaxed to stock's own cross-machine spread: measure that
+      spread (stock on hosts with different core counts / GPU types), then re-gate the fallback.
 
 **2. Render overlay (5.3 min, `simulate` render part)**
 - [ ] Profile the render: Isaac Kit boot vs per-frame RTX render vs encode; GPU util.

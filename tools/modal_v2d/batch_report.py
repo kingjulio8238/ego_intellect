@@ -71,6 +71,22 @@ def clip_rows(invocations: dict[str, dict], batch_id: str) -> list[dict]:
     return rows
 
 
+def image_rows(invocations: dict[str, dict], batch_id: str) -> str:
+    """Execution time per module image and GPU architecture (hedges may run on H100)."""
+    groups: dict[tuple[str, str], list[float]] = {}
+    for inv_id, inv in invocations.items():
+        if not inv_id.startswith(batch_id + "-"):
+            continue
+        for call in inv["calls"]:
+            if call.get("gpu"):
+                key = (call.get("image", "?"), f"sm{call.get('gpu_sm') or '?'}")
+                groups.setdefault(key, []).append(call.get("exec_s") or 0)
+    lines = ["| image | gpu | calls | exec mean s | exec max s |", "|---|---|---|---|---|"]
+    for (image, sm), values in sorted(groups.items()):
+        lines.append(f"| {image} | {sm} | {len(values)} | {statistics.mean(values):.1f} | {max(values):.1f} |")
+    return "\n".join(lines)
+
+
 def billed(batch_id: str, since: dt.datetime) -> tuple[float | None, str | None]:
     rows, error = bench.billing_rows(since)
     if error:
@@ -119,7 +135,7 @@ def main() -> int:
     rows = clip_rows(bench.load_invocations(raw), args.batch_id)
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)
     total, error = (None, "offline") if args.offline else billed(args.batch_id, since)
-    text = report(rows, total, error)
+    text = report(rows, total, error) + "\n\n" + image_rows(bench.load_invocations(raw), args.batch_id)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(f"# Batch {args.batch_id}\n\n{text}\n")
     (out / "clips.json").write_text(json.dumps([{k: v for k, v in r.items() if k != "_waits"} for r in rows], indent=1))

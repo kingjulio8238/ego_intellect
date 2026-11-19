@@ -473,7 +473,7 @@ class StateSync:
             started = time.time()
             push_s = started - call_t0
             if tracker:
-                gpu = None if on_cpu else (C.RG_GPU if image == C.RG_IMAGE else C.MODULE_GPU)
+                gpu = None if on_cpu else (C.RG_GPU if image == C.RG_IMAGE else C.gpu_label(C.MODULE_GPU))
                 if on_cpu:
                     cpu, memory = C.DOWNLOAD_CPU, C.DOWNLOAD_MEM_GIB
                 elif image == C.RG_IMAGE:
@@ -683,10 +683,10 @@ class StateSync:
         finally:
             if budget is not None:
                 budget.drop(hedge_entry)  # the loser exits; the winner is the call's own entry
-            try:
-                claims.pop(key, None)
-            except Exception:  # noqa: BLE001
-                pass
+            # The claim stays (a tombstone; Modal expires idle Dict entries). Cancelling the
+            # losing call does not always stop it: batch b5's cancelled primary started 31 s
+            # after its hedge had finished and the claim was gone, ran the call a second time,
+            # and its orphaned encode corrupted another clip's video.
         timing = dict(result.get("timing") or {})
         timing.update({"lane": lane, "hedged": "hedge" in calls, "claim_s": claim_s})
         return {**result, "timing": timing}

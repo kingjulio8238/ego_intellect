@@ -125,6 +125,8 @@ $W evaluate --checkpoint $RUN/finetune/checkpoint-<N> --episodes 1 --num-envs 1 
 MODAL_PROFILE=<profile> tools/modal_v2d/run_e2e_modal.sh --batch manifest.json --max-parallel 6
 MODAL_PROFILE=<profile> python -m tools.modal_v2d.batch_report <batch_id>     # clips/h, waits, $/clip
 python -m tools.modal_v2d.batch_shard manifest.json --profiles a,b --usd-per-clip 1.1   # several workspaces
+# new workspace: secret, md5-verified weights copy, image build, one warm load per image
+python -m tools.modal_v2d.bootstrap_workspace --src <prepared profile> --dst <new profile> --inputs <dir>
 ```
 
 One Modal app and (by default) one control container run every clip; a GPU ledger keeps the
@@ -228,6 +230,11 @@ A failed billing query is reported as UNKNOWN, never as $0.
 | `V2D_MODAL_DOWNLOADS_ON_GPU` | unset | `1` sends weight downloads to the GPU functions, as docker would |
 | `V2D_GROOT_REF` | `23ace64` (n1.7-release) | Isaac-GR00T commit baked into the rg image |
 | `V2D_MODAL_SECRETS` | `v2d-hf` | Comma-separated secret names attached to every function |
+| `V2D_MODAL_HEDGE_GPU` | `L40S` | GPU type(s) of the hedge twins; other types change outputs beyond the strict bar (docs/pipeline/OPTIMIZATION.md) |
+| `V2D_MODAL_MODULE_GPU` / `V2D_MODAL_GPU_PER_IMAGE` | `L40S` / `{}` | A comma list is a Modal fallback list (first type with capacity, ~3 s); per-image JSON overrides. Off by default for the same reason |
+| `V2D_MODAL_HEDGE_AFTER_S` | 30 | Seconds before a call is hedged; 0 disables |
+| `V2D_MODAL_GPU_BUDGET` | 9 | GPU containers one invocation (or shared batch) may hold, idle ones included |
+| `V2D_MODAL_SCALEDOWN_S` / `V2D_MODAL_SCALEDOWN_PER_IMAGE` | 120 / `{}` | Idle seconds before a module container is released (batch manifests set per-image values) |
 | `V2D_MODAL_DETACH` | 1 | Set to `0` to keep the local client attached |
 
 ## Known risks and limitations (unverified until the smoke ladder runs)

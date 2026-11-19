@@ -51,7 +51,7 @@ SECRETS = [
 IMAGES = build_images()  # lazy: Dockerfiles and uploads are only read locally at launch
 
 MODULE_KW = dict(
-    gpu=C.MODULE_GPU,
+    gpu=C.gpu_spec(C.MODULE_GPU),
     volumes=VOLUMES,
     secrets=SECRETS,
     timeout=C.MODULE_TIMEOUT,
@@ -64,10 +64,16 @@ MODULE_KW = dict(
 )
 
 
-def _module_kw(image: str) -> dict:
+def _module_kw(image: str, hedge: bool = False) -> dict:
     """MODULE_KW with this image's scaledown window (batch mode: heavy models stay warm
-    longer so the next clip's call lands on a container with the model preloaded)."""
-    return {**MODULE_KW, "scaledown_window": C.SCALEDOWN_PER_IMAGE.get(image, C.MODULE_SCALEDOWN_S)}
+    longer so the next clip's call lands on a container with the model preloaded). Hedge
+    twins run on C.HEDGE_GPU."""
+    kw = {**MODULE_KW, "scaledown_window": C.SCALEDOWN_PER_IMAGE.get(image, C.MODULE_SCALEDOWN_S)}
+    if image in C.GPU_PER_IMAGE:  # an image pinned to certain GPU types keeps them for hedges too
+        kw["gpu"] = C.gpu_spec(C.GPU_PER_IMAGE[image])
+    elif hedge:
+        kw["gpu"] = C.gpu_spec(C.HEDGE_GPU)
+    return kw
 
 
 def _execute(spec: dict) -> dict:
@@ -258,62 +264,62 @@ assert set(CPU_FUNCTIONS) == set(C.MODULE_IMAGES), "every module image needs a C
 # Explicit for the same reason as the CPU twins.
 
 
-@app.function(image=IMAGES["v2d_anycalib"], **_module_kw("v2d_anycalib"))
+@app.function(image=IMAGES["v2d_anycalib"], **_module_kw("v2d_anycalib", hedge=True))
 def hedge_v2d_anycalib(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_moge"], **_module_kw("v2d_moge"))
+@app.function(image=IMAGES["v2d_moge"], **_module_kw("v2d_moge", hedge=True))
 def hedge_v2d_moge(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_grounding_dino"], **_module_kw("v2d_grounding_dino"))
+@app.function(image=IMAGES["v2d_grounding_dino"], **_module_kw("v2d_grounding_dino", hedge=True))
 def hedge_v2d_grounding_dino(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_sam2"], **_module_kw("v2d_sam2"))
+@app.function(image=IMAGES["v2d_sam2"], **_module_kw("v2d_sam2", hedge=True))
 def hedge_v2d_sam2(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_sam3d"], **_module_kw("v2d_sam3d"))
+@app.function(image=IMAGES["v2d_sam3d"], **_module_kw("v2d_sam3d", hedge=True))
 def hedge_v2d_sam3d(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_foundation_pose"], **_module_kw("v2d_foundation_pose"))
+@app.function(image=IMAGES["v2d_foundation_pose"], **_module_kw("v2d_foundation_pose", hedge=True))
 def hedge_v2d_foundation_pose(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_hamer"], **_module_kw("v2d_hamer"))
+@app.function(image=IMAGES["v2d_hamer"], **_module_kw("v2d_hamer", hedge=True))
 def hedge_v2d_hamer(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_wilor"], **_module_kw("v2d_wilor"))
+@app.function(image=IMAGES["v2d_wilor"], **_module_kw("v2d_wilor", hedge=True))
 def hedge_v2d_wilor(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_geocalib"], **_module_kw("v2d_geocalib"))
+@app.function(image=IMAGES["v2d_geocalib"], **_module_kw("v2d_geocalib", hedge=True))
 def hedge_v2d_geocalib(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_droid_slam"], **_module_kw("v2d_droid_slam"))
+@app.function(image=IMAGES["v2d_droid_slam"], **_module_kw("v2d_droid_slam", hedge=True))
 def hedge_v2d_droid_slam(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_gsplat_refinement"], **_module_kw("v2d_gsplat_refinement"))
+@app.function(image=IMAGES["v2d_gsplat_refinement"], **_module_kw("v2d_gsplat_refinement", hedge=True))
 def hedge_v2d_gsplat_refinement(spec: dict) -> dict:
     return _execute(spec)
 
 
-@app.function(image=IMAGES["v2d_task_library_loader"], **_module_kw("v2d_task_library_loader"))
+@app.function(image=IMAGES["v2d_task_library_loader"], **_module_kw("v2d_task_library_loader", hedge=True))
 def hedge_v2d_task_library_loader(spec: dict) -> dict:
     return _execute(spec)
 

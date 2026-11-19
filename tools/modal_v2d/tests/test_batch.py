@@ -151,8 +151,8 @@ def test_hedge_runs_exactly_once(monkeypatch, primary_after, expect_lane, expect
     time.sleep(primary_after + 0.5 if expect_lane == "hedge" else 0.3)  # let the loser start too
     assert result["returncode"] == 0 and result["timing"]["lane"] == expect_lane
     assert hedge.spawned == expect_hedge_spawned
-    assert runs == [expect_lane]  # the other container never ran the command
-    assert claims.data == {}  # claim cleaned up
+    assert runs == [expect_lane]  # the other container never ran the command, even starting late
+    assert len(claims.data) == 1  # the claim stays as a tombstone for late starters
 
 
 def test_hedge_off_for_cpu_calls(monkeypatch):
@@ -336,3 +336,59 @@ def test_init_step_is_skipped_when_run_already_initialized(tmp_path, monkeypatch
     (root / "e2e_config.json").write_text("{}")
     assert runtime.init_done(step)
     assert not runtime.init_done(["--config", str(root / "e2e_config.json"), "setup"])
+
+
+def test_extension_cache_is_per_gpu_arch(tmp_path, monkeypatch):
+    from tools.modal_v2d import worker
+
+    root, local = tmp_path / "cache", tmp_path / "local"
+    monkeypatch.setattr(C, "EXT_CACHE_ROOT", str(root))
+    monkeypatch.setattr(C, "LOCAL_EXT_DIR", str(local))
+    (root / "img" / "gsplat_cuda").mkdir(parents=True)  # pre-split cache, built on L40S
+    (root / "img" / "gsplat_cuda" / "k.so").write_text("sm89")
+    monkeypatch.setattr(worker, "_gpu_sm", lambda: "89")
+    env = {}
+    assert worker._ext_cache_in("img", env) == str(root / "img" / "sm89")
+    assert (local / "gsplat_cuda" / "k.so").read_text() == "sm89"  # seeded from the legacy cache
+    import shutil
+
+    shutil.rmtree(local)
+    monkeypatch.setattr(worker, "_gpu_sm", lambda: "90")
+    assert worker._ext_cache_in("img", {}) == str(root / "img" / "sm90")
+    assert not (local / "gsplat_cuda").exists()  # H100 never loads L40S binaries
+
+
+def test_gpu_spec_lists():
+    assert C.gpu_spec("L40S") == "L40S"
+    assert C.gpu_spec("L40S, H100,A100-80GB") == ["L40S", "H100", "A100-80GB"]
+    assert C.gpu_label("L40S,H100") == "L40S"
+
+
+def test_cancelled_call_kills_its_command(tmp_path):
+    """An exception in the worker while the command runs (Modal input cancellation) must not
+    leave the command running: it would write into the next call's mounts."""
+    import signal
+    import subprocess as sp
+
+    from tools.modal_v2d import worker
+
+    marker = tmp_path / "alive"
+    script = f"import time\nwhile True:\n    open({str(marker)!r}, 'w').write(str(time.time()))\n    time.sleep(0.1)\n"
+
+    class Boom(Exception):
+        pass
+
+    class Reporter:
+        def line(self, text):
+            raise Boom  # first output line: simulate the cancellation arriving mid-call
+
+    import sys
+
+    spec = {"argv": [sys.executable, "-u", "-c", "print('start', flush=True)\n" + script]}
+    with pytest.raises(Boom):
+        worker._run_subprocess(spec, dict(os.environ), str(tmp_path), str(tmp_path / "log.txt"), Reporter())
+    time.sleep(0.5)
+    before = marker.stat().st_mtime if marker.exists() else 0
+    time.sleep(0.5)
+    after = marker.stat().st_mtime if marker.exists() else 0
+    assert before == after  # nothing is writing any more

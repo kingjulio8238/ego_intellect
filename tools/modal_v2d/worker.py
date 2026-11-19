@@ -62,13 +62,28 @@ def _ext_cache_in(image: str, env: dict) -> str | None:
     """
     if "TORCH_EXTENSIONS_DIR" in env:
         return None
-    cache = os.path.join(C.EXT_CACHE_ROOT, image)
+    # One cache per GPU architecture: a JIT build is arch-specific, and a shared directory
+    # would be rebuilt (~65 s) every time calls alternate between L40S and a hedge on H100.
+    legacy = os.path.join(C.EXT_CACHE_ROOT, image)
+    sm = _gpu_sm()
+    cache = os.path.join(legacy, f"sm{sm}") if sm else legacy
     local = C.LOCAL_EXT_DIR
-    if os.path.isdir(cache):
-        shutil.copytree(cache, local, dirs_exist_ok=True, ignore=shutil.ignore_patterns("lock"))
+    seed = cache if os.path.isdir(cache) else (legacy if sm == "89" and os.path.isdir(legacy) else None)
+    if seed:  # sm89: the pre-arch-split cache was built on L40S
+        shutil.copytree(seed, local, dirs_exist_ok=True, ignore=shutil.ignore_patterns("lock", "sm*"))
     os.makedirs(local, exist_ok=True)
     env["TORCH_EXTENSIONS_DIR"] = local
     return cache
+
+
+def _gpu_sm() -> str | None:
+    """Compute capability of this container's GPU, e.g. "89" (L40S), "90" (H100)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=20).stdout.strip().splitlines()
+        return out[0].replace(".", "") if out else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _ext_cache_out(cache: str | None) -> None:
@@ -133,6 +148,16 @@ def _prefetch_inputs(spec: dict) -> dict:
     return {"prefetch_files": len(selected), "prefetch_mb": round(total / 1e6, 1), "prefetch_s": round(time.time() - t0, 3)}
 
 
+def _kill_group(process: subprocess.Popen) -> None:
+    import signal  # noqa: PLC0415
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    process.wait()
+
+
 def _run_subprocess(spec: dict, env: dict, workdir: str, log_path: str, reporter) -> int:
     process = subprocess.Popen(
         spec["argv"],
@@ -143,9 +168,17 @@ def _run_subprocess(spec: dict, env: dict, workdir: str, log_path: str, reporter
         text=True,
         bufsize=1,
         errors="replace",
+        start_new_session=True,  # own process group: killed with everything it started
     )
-    _tee(process, log_path, reporter)
-    return process.wait()
+    try:
+        _tee(process, log_path, reporter)
+        return process.wait()
+    except BaseException:
+        # Input cancelled (or the worker failing): never leave the command running. The
+        # container takes its next input with the /data mounts pointing at another call's
+        # directories, so an orphan would write into that call's outputs (batch b5).
+        _kill_group(process)
+        raise
 
 
 def container_age_s() -> float | None:
@@ -242,6 +275,7 @@ def execute(spec: dict, *, state_volume, weights_volume, progress_store=None, re
         "commit_s": round(time.time() - diffed, 3),
         "changed_files": len(changed),
         "container_age_s": age_at_entry,
+        "gpu_sm": _gpu_sm(),  # which GPU type ran it (hedges may run on another)
         **({"resident": True, "preload_s": resident.preload_s, "resident_wait_s": resident.wait_s} if resident else {}),
         **prefetch,
         **gpu_stats,
@@ -332,6 +366,7 @@ class Zygote:
             [hint["argv"][0], os.path.join(os.path.dirname(os.path.abspath(__file__)), "zygote.py"), self.module],
             cwd=self.workdir, env=zenv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
+            start_new_session=True,
         )
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
@@ -375,7 +410,11 @@ class Zygote:
                 assert self.process.stdin is not None
                 self.process.stdin.write(json.dumps({"argv": argv}) + "\n")
                 self.process.stdin.flush()
-            code = self.process.wait()
+            try:
+                code = self.process.wait()
+            except BaseException:  # input cancelled: same rule as _run_subprocess
+                _kill_group(self.process)
+                raise
             self._reader.join(timeout=30)
             with self._lock:
                 self._sink = None
@@ -383,8 +422,7 @@ class Zygote:
 
     def kill(self) -> None:
         if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait()
+            _kill_group(self.process)
 
 
 def serve_resident(request: dict, *, state_volume, weights_volume, progress_store=None) -> dict:
