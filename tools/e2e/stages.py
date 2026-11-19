@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -192,8 +193,18 @@ def setup_stages(
 def doctor_stages(config: E2EConfig) -> list[Stage]:
     """Build preflight stages that validate the configured E2E runtimes."""
     groot = config.input_path("isaac_groot_dir")
+    if os.environ.get("V2D_EXECUTOR") == "modal":
+        # Modal containers get an uploaded tree without .git (tools/modal_v2d); check that
+        # every LFS-tracked file arrived materialised rather than as a pointer.
+        lfs_check = _command(
+            (sys.executable, "-m", "tools.modal_v2d.checks", "lfs-materialized"),
+            cwd=REPO_ROOT,
+            label="verify Git LFS objects are materialised",
+        )
+    else:
+        lfs_check = _command(("git", "lfs", "fsck"), cwd=REPO_ROOT, label="verify Git LFS objects")
     checks = (
-        _command(("git", "lfs", "fsck"), cwd=REPO_ROOT, label="verify Git LFS objects"),
+        lfs_check,
         _command(("nvidia-smi",), cwd=REPO_ROOT, label="verify NVIDIA GPU"),
         _command(("docker", "version"), cwd=REPO_ROOT, label="verify Docker daemon"),
         _command(
@@ -257,6 +268,8 @@ def reconstruct_stages(config: E2EConfig) -> list[Stage]:
     argv.append("--export_threejs_result")
     if bool(parameters.get("dev", False)):
         argv.append("--dev")
+    if bool(parameters.get("fast", False)):
+        argv.append("--fast")
     command = _command(
         argv,
         cwd=RECONSTRUCTION_ROOT,

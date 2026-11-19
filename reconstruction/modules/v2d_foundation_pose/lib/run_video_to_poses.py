@@ -115,6 +115,74 @@ def run_video_to_poses(
 
         return V2dImage(data=rgb_arr), depth, mask
 
+    if os.environ.get("V2D_FP_SEQUENTIAL_FRAMES"):
+        # Profile (fastrecon P-fp-track): cap.set() before every read re-seeks the decoder
+        # from the previous keyframe — 20.8 s of 77 s. The forward pass reads frames in
+        # order, so decode them sequentially (one background thread, a few frames ahead,
+        # with the depth/mask PNG loads) and serve _load_frame from that. Any other index
+        # (registration, backward pass) falls back to the seeking loader.
+        import queue
+        import threading
+
+        _seek_load = _load_frame
+        _ahead: "queue.Queue" = queue.Queue(maxsize=8)
+        _plan = tuple(range(reference_frame + 1, num_frames))  # producer's fixed order
+        _order = list(_plan)  # consumer's remaining frames
+
+        def _producer() -> None:
+            seq = cv2.VideoCapture(video_path)
+            try:
+                if _plan:
+                    seq.set(cv2.CAP_PROP_POS_FRAMES, _plan[0])
+                for idx in _plan:
+                    ret, frame = seq.read()
+                    if not ret:
+                        _ahead.put((idx, None))
+                        break
+                    try:
+                        item = _finish_frame(idx, frame)
+                    except BaseException as exc:  # re-raised by the consumer, like the seeking loader would
+                        _ahead.put((idx, exc))
+                        break
+                    _ahead.put((idx, item))
+            finally:
+                seq.release()
+
+        def _finish_frame(idx: int, frame) -> tuple:
+            rgb_arr = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if (target_width, target_height) != (orig_width, orig_height):
+                rgb_arr = cv2.resize(rgb_arr, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+            depth_p = os.path.join(depth_folder, f"{idx:06d}.png")
+            depth = None
+            if os.path.exists(depth_p):
+                d = DepthImage.load(depth_p)
+                if (target_width, target_height) != (orig_width, orig_height):
+                    d = DepthImage(depth=cv2.resize(d.depth, (target_width, target_height), interpolation=cv2.INTER_NEAREST))
+                depth = d
+            mask_p = os.path.join(masks_folder, f"{idx:06d}.png")
+            mask = None
+            if os.path.exists(mask_p):
+                m = Mask.load(mask_p)
+                if (target_width, target_height) != (orig_width, orig_height):
+                    m = Mask(mask=cv2.resize(m.mask.astype(np.float32), (target_width, target_height), interpolation=cv2.INTER_NEAREST))
+                mask = m
+            return V2dImage(data=rgb_arr), depth, mask
+
+        _started = []
+
+        def _load_frame(idx: int) -> tuple:  # noqa: F811 - sequential fast path
+            if _order and idx == _order[0] and not _started:
+                threading.Thread(target=_producer, daemon=True).start()
+                _started.append(True)
+            if _started and _order and idx == _order[0]:
+                got_idx, item = _ahead.get()
+                _order.pop(0)
+                assert got_idx == idx
+                if isinstance(item, BaseException):
+                    raise item
+                return item if item is not None else (None, None, None)
+            return _seek_load(idx)
+
     def _save_pose(frame_idx: int, pose: Transform3d) -> None:
         os.makedirs(poses_dir, exist_ok=True)
         pose.save(os.path.join(poses_dir, f"{frame_idx:06d}.json"))

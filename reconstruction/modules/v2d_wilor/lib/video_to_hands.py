@@ -46,11 +46,28 @@ def _decode_video_to_frames(video_path: str, frames_dir: str) -> int:
     return len(files)
 
 
+def _decode_selected_frames(video_path: str, frames_dir: str, frame_indices: list[int]) -> None:
+    """Decode only ``frame_indices`` (0-based) to ``frames_dir/<idx+1:06d>.png``.
+
+    Same ffmpeg decode as ``_decode_video_to_frames``; the select filter only drops the
+    other frames, so the kept frames' pixels are identical.
+    """
+    os.makedirs(frames_dir, exist_ok=True)
+    for idx in frame_indices:
+        subprocess.run([
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", video_path,
+            "-vf", f"select=eq(n\\,{int(idx)})", "-vsync", "0", "-frames:v", "1",
+            os.path.join(frames_dir, f"{int(idx) + 1:06d}.png"),
+        ], check=True)
+
+
 def video_to_hands(
     video_path: str,
     output_dir: str,
     weights_dir: str,
     bboxes_dir: Optional[str] = None,
+    frame_indices: Optional[list[int]] = None,
 ) -> None:
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -58,13 +75,18 @@ def video_to_hands(
     get_pipeline(weights_dir)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        n = _decode_video_to_frames(video_path, tmpdir)
-        if n == 0:
-            raise RuntimeError(f"ffmpeg decoded zero frames from {video_path}")
+        if frame_indices:
+            _decode_selected_frames(video_path, tmpdir, frame_indices)
+            one_based = [i + 1 for i in frame_indices]
+        else:
+            n = _decode_video_to_frames(video_path, tmpdir)
+            if n == 0:
+                raise RuntimeError(f"ffmpeg decoded zero frames from {video_path}")
+            one_based = list(range(1, n + 1))
 
         # ffmpeg writes 1-indexed; remap to 0-indexed JSON names to match
         # the rest of the pipeline's frame_idx convention.
-        for one_idx in tqdm(range(1, n + 1), desc="wilor", ncols=80, unit="frame"):
+        for one_idx in tqdm(one_based, desc="wilor", ncols=80, unit="frame"):
             frame_idx = one_idx - 1
             out_path = os.path.join(output_dir, f"{frame_idx:06d}.json")
             if os.path.exists(out_path):
@@ -95,12 +117,16 @@ def main() -> None:
     parser.add_argument("--weights_dir", required=True)
     parser.add_argument("--bboxes_dir", default=None,
                         help="Optional dir of <frame:06d>.json bboxes; skip WiLoR's detector when set.")
+    parser.add_argument("--frame_indices", default=None,
+                        help="Comma-separated 0-based frames to process (default: all).")
     args = parser.parse_args()
     video_to_hands(
         video_path  = args.video_path,
         output_dir  = args.output_dir,
         weights_dir = args.weights_dir,
         bboxes_dir  = args.bboxes_dir,
+        frame_indices = ([int(x) for x in args.frame_indices.split(",")]
+                         if args.frame_indices else None),
     )
 
 

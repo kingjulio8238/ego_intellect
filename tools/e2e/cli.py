@@ -181,6 +181,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="mount local reconstruction module sources in the worker containers",
     )
+    reconstruct.add_argument(
+        "--fast",
+        action="store_true",
+        default=None,
+        help="skip diagnostic-only reconstruction work (overlay videos, unused WiLoR "
+        "frames); the result bundle is unchanged",
+    )
 
     import_reconstruction = subparsers.add_parser(
         "import-reconstruction", help="copy a precomputed reconstruction bundle"
@@ -663,6 +670,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "run_gsplat_refinement": run_gsplat_refinement,
                 "dev": dev,
             }
+            # Only recorded when set, so existing runs keep their stage signatures.
+            if bool(_stage_value(args, config, "reconstruct", "fast", default=False)):
+                parameters["fast"] = True
             config = _configure(
                 args,
                 config,

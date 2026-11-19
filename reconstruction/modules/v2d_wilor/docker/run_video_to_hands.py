@@ -10,6 +10,7 @@ def run_video_to_hands(
     weights_dir: str,
     bboxes_dir: str | None = None,
     dev: bool = False,
+    frame_indices: list[int] | None = None,
 ) -> None:
     inputs = {
         "video_path":  video_path,
@@ -22,6 +23,8 @@ def run_video_to_hands(
         module="v2d.wilor.lib.video_to_hands",
         inputs=inputs,
         outputs={"output_dir": output_dir},
+        extra_args=({"frame_indices": ",".join(str(i) for i in frame_indices)}
+                    if frame_indices else None),
         dev=dev,
         modules_dir=MODULES_DIR,
         gpus=True,

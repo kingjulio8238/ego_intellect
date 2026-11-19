@@ -73,6 +73,11 @@ def run_in_container(
     if env:
         for key, value in env.items():
             cmd += ["-e", f"{key}={value}"]
+    # Opt-in per-module switches set by the orchestrator (e.g. reconstruct --fast): the
+    # variables named in V2D_FORWARD_ENV are passed through to every module container.
+    for key in filter(None, os.environ.get("V2D_FORWARD_ENV", "").split(",")):
+        if key in os.environ and not (env and key in env):
+            cmd += ["-e", f"{key}={os.environ[key]}"]
     for host_dir, container_dir in dir_to_mount.items():
         cmd += ["-v", f"{host_dir}:{container_dir}"]
     if dev:

@@ -22,6 +22,10 @@ from v2d.foundation_pose.lib.foundation_pose_tracker import FoundationPoseTracke
 from v2d.foundation_pose.lib.backends import DEFAULT_BACKEND, SUPPORTED_BACKENDS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+if os.environ.get("V2D_FP_QUIET_LOGS"):
+    # FoundationPose logs every hypothesis' score tensor at INFO (18k tensor->str
+    # conversions, ~11 s of host syncs per scale search). Results are unaffected.
+    logging.getLogger().setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

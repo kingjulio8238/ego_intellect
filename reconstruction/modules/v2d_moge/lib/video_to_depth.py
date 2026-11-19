@@ -97,6 +97,14 @@ def video_to_depth(
         fov_x = float(np.degrees(2 * np.arctan(known.width / (2 * known.fx))))
         print(f"  Using fov_x={fov_x:.2f}° from {input_intrinsics_path}")
 
+    if os.environ.get("V2D_MOGE_PIPELINE"):
+        _video_to_depth_pipelined(
+            model, video_path, depth_folder, intrinsics_folder, batch_size, fov_x,
+            points_folder, normals_folder, mask_folder,
+            writers=int(os.environ.get("V2D_MOGE_WRITERS", "8")),
+        )
+        return
+
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     image_batch = []
@@ -156,6 +164,84 @@ def video_to_depth(
         frame_index += 1
 
     cap.release()
+
+def _video_to_depth_pipelined(
+    model, video_path, depth_folder, intrinsics_folder, batch_size, fov_x,
+    points_folder, normals_folder, mask_folder, writers: int = 8,
+) -> None:
+    """Same computation and files as the serial loop, with decode and file writes overlapped
+    with inference (V2D_MOGE_PIPELINE=1): a reader thread decodes ahead, a thread pool
+    encodes/writes PNG/JSON. Batches, preprocessing and the model call are unchanged."""
+    import queue
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    frames: "queue.Queue" = queue.Queue(maxsize=4 * batch_size)
+
+    def reader() -> None:
+        cap = cv2.VideoCapture(video_path)
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.put(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+        finally:
+            cap.release()
+            frames.put(None)
+
+    def save(frame_idx, width, height, depth, intrinsics, points, normal, mask) -> None:
+        camera_intrinsics = CameraIntrinsics(
+            fx=float(intrinsics[0, 0] * width),
+            fy=float(intrinsics[1, 1] * height),
+            cx=float(intrinsics[0, 2] * width),
+            cy=float(intrinsics[1, 2] * height),
+            width=width,
+            height=height,
+        )
+        DepthImage(depth=depth).to_pil_image().save(os.path.join(depth_folder, f"{frame_idx:06d}.png"))
+        camera_intrinsics.save(os.path.join(intrinsics_folder, f"{frame_idx:06d}.json"))
+        if points is not None:
+            np.save(os.path.join(points_folder, f"{frame_idx:06d}.npy"), points)
+        if normal is not None:
+            np.save(os.path.join(normals_folder, f"{frame_idx:06d}.npy"), normal)
+        if mask is not None:
+            Image.fromarray((mask * 255).astype(np.uint8)).save(os.path.join(mask_folder, f"{frame_idx:06d}.png"))
+
+    threading.Thread(target=reader, daemon=True).start()
+    pool = ThreadPoolExecutor(max_workers=max(1, writers))
+    pending = []
+    next_idx = 0
+    done = False
+    while not done:
+        batch = []
+        while len(batch) < batch_size:
+            item = frames.get()
+            if item is None:
+                done = True
+                break
+            batch.append(item)
+        if not batch:
+            break
+        input_tensor = torch.stack([_preprocess_numpy(np.asarray(img)) for img in batch], dim=0).to("cuda")
+        with torch.no_grad():
+            predictions = model.infer(input_tensor, fov_x=fov_x)
+        depth = predictions["depth"].cpu().numpy()
+        intr = predictions["intrinsics"].cpu().numpy()
+        points = predictions["points"].cpu().numpy() if points_folder is not None else None
+        normal = predictions["normal"].cpu().numpy() if normals_folder is not None and "normal" in predictions else None
+        mask = predictions["mask"].cpu().numpy() if mask_folder is not None else None
+        for i, img in enumerate(batch):
+            pending.append(pool.submit(
+                save, next_idx + i, img.width, img.height, depth[i], intr[i],
+                None if points is None else points[i], None if normal is None else normal[i],
+                None if mask is None else mask[i],
+            ))
+        next_idx += len(batch)
+    for future in pending:
+        future.result()
+    pool.shutdown()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video to depth frames")

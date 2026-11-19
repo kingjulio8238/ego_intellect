@@ -88,6 +88,11 @@ def _remap_video_to_ffmpeg(
             "-s", f"{width}x{height}", "-pix_fmt", "bgr24",
             "-r", str(fps), "-i", "-",
             "-c:v", "libx264", "-crf", str(crf),
+            # x264's output depends on its thread count, which defaults to the host's core
+            # count, so the "same" encode differs across machines and every downstream
+            # stage inherits the difference (fastrecon, 2026-11-18). Pin it when asked.
+            *(["-threads", os.environ["V2D_ANYCALIB_FFMPEG_THREADS"]]
+              if os.environ.get("V2D_ANYCALIB_FFMPEG_THREADS") else []),
             "-pix_fmt", "yuv420p",
             output_path,
         ],

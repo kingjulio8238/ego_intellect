@@ -17,6 +17,7 @@ Both return a list of dicts in our unified per-detection schema (see
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional, Sequence
 
 import numpy as np
@@ -25,6 +26,10 @@ import torch
 from v2d.common.datatypes import BoundingBox
 
 _PIPE = None
+
+
+def pipeline_key(weights_dir: str, dtype: torch.dtype = torch.float16) -> tuple:
+    return ("wilor.pipeline", os.path.abspath(weights_dir), str(dtype))
 
 
 def get_pipeline(weights_dir: str, dtype: torch.dtype = torch.float16):
@@ -37,6 +42,10 @@ def get_pipeline(weights_dir: str, dtype: torch.dtype = torch.float16):
     wilor_final.ckpt, detector.pt) under ``<weights_dir>/pretrained_models/``.
     """
     global _PIPE
+    if _PIPE is None:
+        # Built ahead of the call by a resident process (lib/_resident.py), if any.
+        from v2d.common import resident
+        _PIPE = resident.take(pipeline_key(weights_dir, dtype))
     if _PIPE is None:
         from wilor_mini.pipelines.wilor_hand_pose3d_estimation_pipeline import (
             WiLorHandPose3dEstimationPipeline,

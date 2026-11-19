@@ -96,6 +96,7 @@ Usage:
 Run from reconstruction/.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import argparse
 import glob
 import json
@@ -149,6 +150,7 @@ from v2d.droid_slam.docker.run_video_to_slam import run_video_to_slam
 from v2d.foundation_pose.docker.run_ekf_smoothing import run_ekf_smoothing
 from v2d.foundation_pose.docker.run_estimate_mesh_scale import run_estimate_mesh_scale
 from v2d.foundation_pose.docker.run_video_to_poses import run_video_to_poses
+from v2d.foundation_pose.docker.run_scale_then_track import run_scale_then_track
 from v2d.geocalib.docker.run_video_to_calibration import (
     run_video_to_calibration as run_geocalib_video_to_calibration,
 )
@@ -543,6 +545,7 @@ def run_ego_wilor(
     geocalib_camera_model: str = "pinhole",
     geocalib_num_samples: int = 8,
     use_geocalib_intrinsics: bool = False,
+    fast: bool = False,
     gravity_align: bool = False,
     gravity_align_target: str = "z_up",
     moge_weights: str = "data/weights/moge",
@@ -796,6 +799,75 @@ def run_ego_wilor(
     print(f"  min_iou         : {min_iou}")
     print(f"{'='*60}\n")
 
+    def _diag(label: str, done: bool) -> bool:
+        """Gate for diagnostic-only outputs (overlay videos/PNGs) that no later step or the
+        result bundle reads. --fast skips them; outputs are otherwise unchanged."""
+        if fast:
+            print(f"  [fast] skip diagnostic: {label}")
+            return True
+        return _step(label, done)
+
+    # --fast runs independent module calls concurrently (each call is its own container);
+    # _later() starts one, _join() waits for it and re-raises its error. Serial otherwise.
+    _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fast") if fast else None
+    if fast:
+        # Module-side switches, each verified output-identical by a fastrecon replay smoke:
+        # MoGe decode/write overlap, FoundationPose sequential frame decode, exact hull-based
+        # mesh diameter and quiet hypothesis logging in the scale search.
+        fast_env = {
+            "V2D_MOGE_PIPELINE": "1",
+            "V2D_FP_SEQUENTIAL_FRAMES": "1",
+            "V2D_FP_FAST_DIAMETER": "1",
+            "V2D_FP_QUIET_LOGS": "1",
+            "V2D_GSPLAT_LOAD_WORKERS": "8",
+            # gsplat round 2 (fastrecon R2-gsplat-all+compile: 460 -> 140 s, within noise)
+            "V2D_GSPLAT_SHARED_MANO": "1",
+            "V2D_GSPLAT_VGG_CACHE": "1",
+            "V2D_GSPLAT_MICRO": "1",
+            "V2D_GSPLAT_COMPILE": "1",
+            # x264 output depends on its thread count (default: the host's core count), so
+            # pin it: the undistorted video, and everything downstream, no longer depends on
+            # which Modal host AnyCalib lands on (fastrecon x264 probe, 2026-11-18).
+            "V2D_ANYCALIB_FFMPEG_THREADS": "8",
+        }
+        os.environ.update(fast_env)
+        forwarded = set(filter(None, os.environ.get("V2D_FORWARD_ENV", "").split(",")))
+        os.environ["V2D_FORWARD_ENV"] = ",".join(sorted(forwarded | set(fast_env)))
+    _futures: dict = {}
+
+    def _later(name: str, fn) -> None:
+        if _pool is None:
+            fn()
+        else:
+            _futures[name] = _pool.submit(fn)
+
+    def _join(*names: str) -> None:
+        for name in names:
+            if name in _futures:
+                _futures[name].result()
+
+    def _warm(image: str, delay_s: float = 0.0) -> None:
+        """--fast: bring up a container of `image` before its call needs it. On the Modal
+        shim `docker pull` starts a no-op call (the container stays warm ~2 min); on real
+        docker it is a harmless failed pull. Fire-and-forget."""
+        if not fast:
+            return
+        import threading  # noqa: PLC0415
+
+        def go() -> None:
+            subprocess.run(["docker", "pull", image], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False)
+
+        timer = threading.Timer(delay_s, go)
+        timer.daemon = True
+        timer.start()
+
+    # Images needed within the first ~2 minutes; later ones are warmed ahead of their call.
+    # On Modal these also start preloading containers for critical-path calls seen in earlier
+    # runs (SAM3D's ~50 s import + model load then overlaps the prompt chain).
+    for _image in ("v2d_moge", "v2d_wilor", "v2d_grounding_dino", "v2d_sam2", "v2d_droid_slam", "v2d_sam3d"):
+        _warm(_image)
+
     # 0. AnyCalib undistortion (optional) ------------------------------------
     if undistort:
         os.makedirs(anycalib_dir, exist_ok=True)
@@ -847,17 +919,20 @@ def run_ego_wilor(
         if use_geocalib_intrinsics
         else (undistorted_intr if undistort else None)
     )
-    if not _step("MoGe depth + intrinsics", _has_files(depth_dir)):
-        run_moge_depth(
-            video_path            = video_path,
-            depth_folder          = depth_dir,
-            intrinsics_folder     = intrinsics_dir,
-            weights_path          = moge_weights,
-            input_intrinsics_path = moge_input_intrinsics,
-            dev                   = dev,
-        )
-    if not _step("Stabilise intrinsics", os.path.exists(intrinsics_stable)):
-        stabilize_intrinsics(intrinsics_dir, intrinsics_stable)
+    def _depth() -> None:
+        if not _step("MoGe depth + intrinsics", _has_files(depth_dir)):
+            run_moge_depth(
+                video_path            = video_path,
+                depth_folder          = depth_dir,
+                intrinsics_folder     = intrinsics_dir,
+                weights_path          = moge_weights,
+                input_intrinsics_path = moge_input_intrinsics,
+                dev                   = dev,
+            )
+        if not _step("Stabilise intrinsics", os.path.exists(intrinsics_stable)):
+            stabilize_intrinsics(intrinsics_dir, intrinsics_stable)
+
+    _later("depth", _depth)
 
     # 2c. Optional DROID-SLAM ----------------------------------------------
     # Per-frame camera-to-world Transform3d JSONs. Scale-aligned to MoGe
@@ -865,7 +940,11 @@ def run_ego_wilor(
     # the pipeline. Used downstream to seed gsplat's background pose field
     # (see step 15) — the identity-init basin in gsplat is only good for
     # near-static cameras; ego sequences need this seed.
-    if run_slam:
+    _depth_future = _futures.get("depth")
+
+    def _slam() -> None:
+        if _depth_future is not None:
+            _depth_future.result()
         if not _step("DROID-SLAM trajectory", _has_files(slam_poses_dir)):
             run_video_to_slam(
                 video_path            = video_path,
@@ -877,6 +956,24 @@ def run_ego_wilor(
                 dev                   = dev,
             )
 
+    if run_slam:
+        _later("slam", _slam)
+
+    # Grounding DINO reads only the reference frame, so under --fast it runs alongside
+    # WiLoR (step 3) instead of after it; step 4 joins it before reading its output.
+    def _dino() -> None:
+        if object_prompt is not None and not _step("Grounding DINO (ref frame)", os.path.exists(dino_detections)):
+            run_image_to_object_bboxes(
+                image_path  = ref_rgb,
+                output_path = dino_detections,
+                prompt      = object_prompt,
+                model_dir   = grounding_dino_weights,
+                dev         = False,
+            )
+
+    if fast:
+        _later("dino", _dino)
+
     # 3. WiLoR over all frames -----------------------------------------------
     if not _step("WiLoR per-frame detection + MANO",
                  _has_files(wilor_raw_dir) and
@@ -886,6 +983,10 @@ def run_ego_wilor(
             output_dir  = wilor_raw_dir,
             weights_dir = wilor_weights,
             dev         = dev,
+            # Outside wilor mode only the reference frame's detections are read
+            # (SAM2 seeding); --fast skips the other frames.
+            **({"frame_indices": [reference_frame]}
+               if fast and hand_pose_source != "wilor" else {}),
         )
 
     # Slice out the ref-frame detections for SAM2 seeding + overlay legend.
@@ -923,14 +1024,10 @@ def run_ego_wilor(
     object_box = None
     obj_dets: list[dict] = []
     if object_prompt is not None:
-        if not _step("Grounding DINO (ref frame)", os.path.exists(dino_detections)):
-            run_image_to_object_bboxes(
-                image_path  = ref_rgb,
-                output_path = dino_detections,
-                prompt      = object_prompt,
-                model_dir   = grounding_dino_weights,
-                dev         = False,
-            )
+        if fast:
+            _join("dino")
+        else:
+            _dino()
         with open(dino_detections) as f:
             obj_dets = json.load(f)
         if not obj_dets:
@@ -1040,6 +1137,7 @@ def run_ego_wilor(
         _has_files(os.path.join(masks_dir, d))
         for d in (os.listdir(masks_dir) if os.path.isdir(masks_dir) else [])
     )
+    _warm("v2d_hamer")
     if not _step("SAM2 mask propagation", sam2_done):
         run_video_to_masks(
             video_path  = video_path,
@@ -1053,10 +1151,10 @@ def run_ego_wilor(
     with open(hand_tracks) as f:
         track_meta = json.load(f)["tracks"]
 
-    if not _step("Render prompts overlay", os.path.exists(prompts_overlay)):
+    if not _diag("Render prompts overlay", os.path.exists(prompts_overlay)):
         _render_prompts_overlay(ref_rgb, track_meta, detections, prompts_overlay)
 
-    if not _step("Render masks overlay video", os.path.exists(masks_overlay)):
+    if not _diag("Render masks overlay video", os.path.exists(masks_overlay)):
         _render_masks_overlay(
             frames_dir=frames_dir,
             masks_dir=masks_dir,
@@ -1065,24 +1163,104 @@ def run_ego_wilor(
         )
 
     # 8. Object branch: mesh source + FoundationPose -------------------------
-    if object_prompt is not None:
-        ref_obj_mask = f"{masks_dir}/{object_track_id}/{reference_frame:06d}.png"
-        if object_mesh_path is not None:
-            print("  [skip] SAM3D mesh generation (using provided OBJ)")
-            if skip_object_scale_estimation:
-                object_mesh_for_pipeline = object_mesh_path
-                print("  [skip] FoundationPose scale estimation (using provided OBJ scale)")
+    _join("depth")  # SAM3D / FoundationPose / HaMeR alignment read depth
+
+    def _object_branch() -> None:
+        nonlocal object_mesh_for_pipeline
+        _warm("v2d_foundation_pose", delay_s=30)  # FoundationPose follows SAM3D (~100 s)
+        if object_prompt is not None:
+            ref_obj_mask = f"{masks_dir}/{object_track_id}/{reference_frame:06d}.png"
+            if object_mesh_path is not None:
+                print("  [skip] SAM3D mesh generation (using provided OBJ)")
+                if skip_object_scale_estimation:
+                    object_mesh_for_pipeline = object_mesh_path
+                    print("  [skip] FoundationPose scale estimation (using provided OBJ scale)")
+                else:
+                    if not _step("FoundationPose scale estimation (provided OBJ)", os.path.exists(provided_mesh_scaled)):
+                        run_estimate_mesh_scale(
+                            mesh_path               = object_mesh_path,
+                            rgb_path                = ref_rgb,
+                            depth_path              = ref_depth,
+                            mask_path               = ref_obj_mask,
+                            intrinsics_path         = intrinsics_stable,
+                            weights_dir             = foundation_pose_weights,
+                            scale_path              = provided_scale_path,
+                            rescaled_mesh_path      = provided_mesh_scaled,
+                            lo                      = 0.5,
+                            hi                      = 2.0,
+                            n_samples               = 9,
+                            n_levels                = 4,
+                            iou_weight              = 1.0,
+                            depth_weight            = 1.0,
+                            registration_iterations = 5,
+                            dev                     = dev,
+                        )
+                    object_mesh_for_pipeline = provided_mesh_scaled
             else:
-                if not _step("FoundationPose scale estimation (provided OBJ)", os.path.exists(provided_mesh_scaled)):
-                    run_estimate_mesh_scale(
-                        mesh_path               = object_mesh_path,
+                os.makedirs(mesh_dir, exist_ok=True)
+                if not _step("SAM3D mesh generation", os.path.exists(mesh_path)):
+                    run_image_to_mesh(
+                        image_path            = ref_rgb,
+                        mask_path             = ref_obj_mask,
+                        mesh_path             = mesh_path,
+                        transform_path        = mesh_transform,
+                        intrinsics_path       = mesh_intrinsics,
+                        weights_dir           = sam3d_weights,
+                        with_texture_baking   = True,
+                        with_mesh_postprocess = True,
+                        depth_path            = ref_depth,
+                        depth_intrinsics_path = intrinsics_stable,
+                        depth_mask_path       = ref_obj_mask,
+                        dev                   = dev,
+                    )
+
+                if not _step("Apply SAM3D transform", os.path.exists(mesh_pretransformed)):
+                    _apply_sam3d_transform(mesh_path, mesh_transform, mesh_pretransformed)
+
+                _warm("v2d_gsplat_refinement", delay_s=30)  # refinement follows FoundationPose
+                # Off: the replay (fastrecon M1) showed tracking poses differ when it shares a
+                # process with the scale search (FoundationPose keeps process-global state).
+                if (fast and os.environ.get("V2D_FP_MERGED") and not os.path.exists(mesh_scaled)
+                        and not _has_files(poses_dir)):
+                    # One container for scale search + tracking (same functions and files;
+                    # saves a round trip and a FoundationPose import on the critical path).
+                    _step("FoundationPose scale estimation + tracking (one call)", False)
+                    run_scale_then_track(
+                        mesh_path               = mesh_pretransformed,
                         rgb_path                = ref_rgb,
                         depth_path              = ref_depth,
                         mask_path               = ref_obj_mask,
                         intrinsics_path         = intrinsics_stable,
                         weights_dir             = foundation_pose_weights,
-                        scale_path              = provided_scale_path,
-                        rescaled_mesh_path      = provided_mesh_scaled,
+                        scale_path              = scale_path,
+                        rescaled_mesh_path      = mesh_scaled,
+                        lo                      = 0.5,
+                        hi                      = 2.0,
+                        n_samples               = 9,
+                        n_levels                = 4,
+                        iou_weight              = 1.0,
+                        depth_weight            = 1.0,
+                        registration_iterations = 5,
+                        video_path              = video_path,
+                        depth_folder            = depth_dir,
+                        masks_folder            = f"{masks_dir}/{object_track_id}",
+                        camera_intrinsics_path  = intrinsics_stable,
+                        poses_dir               = poses_dir,
+                        reference_frame         = reference_frame,
+                        mask_depth              = True,
+                        reregister_iou_thresh   = reregister_iou_thresh if reregister_iou_thresh else None,
+                        dev                     = dev,
+                    )
+                elif not _step("FoundationPose scale estimation", os.path.exists(mesh_scaled)):
+                    run_estimate_mesh_scale(
+                        mesh_path               = mesh_pretransformed,
+                        rgb_path                = ref_rgb,
+                        depth_path              = ref_depth,
+                        mask_path               = ref_obj_mask,
+                        intrinsics_path         = intrinsics_stable,
+                        weights_dir             = foundation_pose_weights,
+                        scale_path              = scale_path,
+                        rescaled_mesh_path      = mesh_scaled,
                         lo                      = 0.5,
                         hi                      = 2.0,
                         n_samples               = 9,
@@ -1092,80 +1270,53 @@ def run_ego_wilor(
                         registration_iterations = 5,
                         dev                     = dev,
                     )
-                object_mesh_for_pipeline = provided_mesh_scaled
-        else:
-            os.makedirs(mesh_dir, exist_ok=True)
-            if not _step("SAM3D mesh generation", os.path.exists(mesh_path)):
-                run_image_to_mesh(
-                    image_path            = ref_rgb,
-                    mask_path             = ref_obj_mask,
-                    mesh_path             = mesh_path,
-                    transform_path        = mesh_transform,
-                    intrinsics_path       = mesh_intrinsics,
-                    weights_dir           = sam3d_weights,
-                    with_texture_baking   = True,
-                    with_mesh_postprocess = True,
-                    depth_path            = ref_depth,
-                    depth_intrinsics_path = intrinsics_stable,
-                    depth_mask_path       = ref_obj_mask,
-                    dev                   = dev,
+                object_mesh_for_pipeline = mesh_scaled
+
+            if not _step("FoundationPose tracking", _has_files(poses_dir)):
+                run_video_to_poses(
+                    video_path             = video_path,
+                    depth_folder           = depth_dir,
+                    masks_folder           = f"{masks_dir}/{object_track_id}",
+                    camera_intrinsics_path = intrinsics_stable,
+                    mesh_path              = object_mesh_for_pipeline,
+                    poses_dir              = poses_dir,
+                    weights_dir            = foundation_pose_weights,
+                    reference_frame        = reference_frame,
+                    mask_depth             = True,
+                    reregister_iou_thresh  = reregister_iou_thresh if reregister_iou_thresh else None,
+                    dev                    = dev,
                 )
 
-            if not _step("Apply SAM3D transform", os.path.exists(mesh_pretransformed)):
-                _apply_sam3d_transform(mesh_path, mesh_transform, mesh_pretransformed)
-
-            if not _step("FoundationPose scale estimation", os.path.exists(mesh_scaled)):
-                run_estimate_mesh_scale(
-                    mesh_path               = mesh_pretransformed,
-                    rgb_path                = ref_rgb,
-                    depth_path              = ref_depth,
-                    mask_path               = ref_obj_mask,
-                    intrinsics_path         = intrinsics_stable,
-                    weights_dir             = foundation_pose_weights,
-                    scale_path              = scale_path,
-                    rescaled_mesh_path      = mesh_scaled,
-                    lo                      = 0.5,
-                    hi                      = 2.0,
-                    n_samples               = 9,
-                    n_levels                = 4,
-                    iou_weight              = 1.0,
-                    depth_weight            = 1.0,
-                    registration_iterations = 5,
-                    dev                     = dev,
+            if fast and run_refinement_simple:
+                print("  [fast] skip EKF pose smoothing: only overlays read it; refined poses win in result/")
+            elif not _step("EKF pose smoothing", _has_files(poses_smooth_dir)):
+                run_ekf_smoothing(
+                    poses_dir            = poses_dir,
+                    mesh_path            = object_mesh_for_pipeline,
+                    intrinsics_path      = intrinsics_stable,
+                    weights_dir          = foundation_pose_weights,
+                    output_dir           = poses_smooth_dir,
+                    masks_folder         = f"{masks_dir}/{object_track_id}",
+                    process_noise_xy     = 0.01,
+                    process_noise_z      = 0.01,
+                    process_noise_r      = 0.02,
+                    measurement_noise_xy = 0.01,
+                    measurement_noise_z  = 0.04,
+                    measurement_noise_r  = 0.02,
+                    dev                  = dev,
                 )
+
+    if fast and object_prompt is not None:
+        # Same path the branch assigns; known up front so the hand branch can proceed.
+        if object_mesh_path is None:
             object_mesh_for_pipeline = mesh_scaled
-
-        if not _step("FoundationPose tracking", _has_files(poses_dir)):
-            run_video_to_poses(
-                video_path             = video_path,
-                depth_folder           = depth_dir,
-                masks_folder           = f"{masks_dir}/{object_track_id}",
-                camera_intrinsics_path = intrinsics_stable,
-                mesh_path              = object_mesh_for_pipeline,
-                poses_dir              = poses_dir,
-                weights_dir            = foundation_pose_weights,
-                reference_frame        = reference_frame,
-                mask_depth             = True,
-                reregister_iou_thresh  = reregister_iou_thresh if reregister_iou_thresh else None,
-                dev                    = dev,
-            )
-
-        if not _step("EKF pose smoothing", _has_files(poses_smooth_dir)):
-            run_ekf_smoothing(
-                poses_dir            = poses_dir,
-                mesh_path            = object_mesh_for_pipeline,
-                intrinsics_path      = intrinsics_stable,
-                weights_dir          = foundation_pose_weights,
-                output_dir           = poses_smooth_dir,
-                masks_folder         = f"{masks_dir}/{object_track_id}",
-                process_noise_xy     = 0.01,
-                process_noise_z      = 0.01,
-                process_noise_r      = 0.02,
-                measurement_noise_xy = 0.01,
-                measurement_noise_z  = 0.04,
-                measurement_noise_r  = 0.02,
-                dev                  = dev,
-            )
+        elif skip_object_scale_estimation:
+            object_mesh_for_pipeline = object_mesh_path
+        else:
+            object_mesh_for_pipeline = provided_mesh_scaled
+        _later("object", _object_branch)
+    else:
+        _object_branch()
 
     # Downstream object overlays/refinement use the object mask from masks/.
     object_masks_dir = (
@@ -1243,7 +1394,7 @@ def run_ego_wilor(
 
         # Verification overlay over the refined masks (hand tracks only —
         # object stays in masks/, gets rendered by the existing overlay).
-        if not _step("Render refined masks overlay",
+        if not _diag("Render refined masks overlay",
                      os.path.exists(masks_refined_overlay)):
             _render_masks_overlay(
                 frames_dir = frames_dir,
@@ -1258,7 +1409,7 @@ def run_ego_wilor(
 
     if hand_pose_source == "wilor":
         # 10. Render virtual-cam verification overlay (raw, real detections only)
-        if not _step("Render wilor mesh overlay (raw)", os.path.exists(wilor_overlay)):
+        if not _diag("Render wilor mesh overlay (raw)", os.path.exists(wilor_overlay)):
             run_wilor_render(
                 frames_dir       = frames_dir,
                 wilor_dir        = wilor_tracks_dir,
@@ -1287,7 +1438,7 @@ def run_ego_wilor(
             )
 
         # 12. Render aligned overlay (real frames only) ---------------------
-        if not _step("Render aligned wilor overlay (real only)",
+        if not _diag("Render aligned wilor overlay (real only)",
                      os.path.exists(wilor_aligned_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1328,7 +1479,7 @@ def run_ego_wilor(
         )
 
         # 14. Render filled aligned overlay (real + interpolated) ----------
-        if not _step("Render filled aligned wilor overlay",
+        if not _diag("Render filled aligned wilor overlay",
                      os.path.exists(wilor_aligned_filled_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1360,7 +1511,7 @@ def run_ego_wilor(
             )
 
         # 14b. HaMeR virtual-cam overlay.
-        if not _step("Render HaMeR mesh overlay", os.path.exists(hamer_overlay)):
+        if not _diag("Render HaMeR mesh overlay", os.path.exists(hamer_overlay)):
             run_hamer_render(
                 frames_dir       = frames_dir,
                 hamer_dir        = hamer_dir,
@@ -1384,7 +1535,7 @@ def run_ego_wilor(
             )
 
         # 14d. HaMeR aligned overlay.
-        if not _step("Render aligned HaMeR overlay",
+        if not _diag("Render aligned HaMeR overlay",
                      os.path.exists(hamer_aligned_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1418,7 +1569,7 @@ def run_ego_wilor(
         )
 
         # 14i. Filled HaMeR aligned overlay.
-        if not _step("Render filled aligned HaMeR overlay",
+        if not _diag("Render filled aligned HaMeR overlay",
                      os.path.exists(hamer_aligned_filled_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1482,7 +1633,7 @@ def run_ego_wilor(
             for stale_path in hawor_dependent_outputs:
                 _remove_generated_path(stale_path)
 
-        if not _step("Render HaWoR mesh overlay", os.path.exists(hawor_overlay)):
+        if not _diag("Render HaWoR mesh overlay", os.path.exists(hawor_overlay)):
             run_hamer_render(
                 frames_dir       = frames_dir,
                 hamer_dir        = hawor_dir,
@@ -1504,7 +1655,7 @@ def run_ego_wilor(
                 dev               = dev,
             )
 
-        if not _step("Render aligned HaWoR overlay", os.path.exists(hawor_aligned_overlay)):
+        if not _diag("Render aligned HaWoR overlay", os.path.exists(hawor_aligned_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
                 aligned_dir        = hawor_aligned_dir,
@@ -1534,7 +1685,7 @@ def run_ego_wilor(
             f"{hawor_aligned_filled_dir}/handedness.json",
         )
 
-        if not _step("Render filled aligned HaWoR overlay",
+        if not _diag("Render filled aligned HaWoR overlay",
                      os.path.exists(hawor_aligned_filled_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1545,6 +1696,8 @@ def run_ego_wilor(
                 object_poses_dir   = object_poses_arg,
                 dev                = dev,
             )
+
+    _join("object", "slam")  # refinement reads object poses and the SLAM trajectory
 
     # 15. Optional joint hand+object refinement via Gaussian splatting -----
     # Mirrors run_hand_masks.py's refinement block. The selected primary hand
@@ -1814,7 +1967,7 @@ def run_ego_wilor(
             with open(refined_object_scale_json) as f:
                 learned_object_scale = float(json.load(f).get("scale", 1.0))
             print(f"  Loaded learned object scale: {learned_object_scale:.4f}")
-        if not _step(f"Render refined {refine_source} overlay",
+        if not _diag(f"Render refined {refine_source} overlay",
                      os.path.exists(refined_hand_overlay)):
             run_render_hands_aligned_video(
                 frames_dir         = frames_dir,
@@ -1886,7 +2039,7 @@ def run_ego_wilor(
         if not using_provided_object_mesh:
             simple_refinement_json_roots.append(refined_object_scale_json)
         simple_refinement_done = (
-            os.path.exists(refined_simple_overlay)
+            (fast or os.path.exists(refined_simple_overlay))
             and _has_files(refined_simple_poses_dir)
             and _has_files(refined_simple_hand_dir)
             and (
@@ -1908,7 +2061,7 @@ def run_ego_wilor(
                 object_poses_dir            = poses_dir,
                 object_mask_dir             = refine_object_mask_dir,
                 refined_object_poses_dir    = refined_simple_poses_dir,
-                overlay_path                = refined_simple_overlay,
+                overlay_path                = "" if fast else refined_simple_overlay,
                 refined_object_scale_path   = None if using_provided_object_mesh else refined_object_scale_json,
                 left_hand_pose_dir          = _maybe_simple(left_pose_in),
                 left_hand_mask_dir          = _maybe_simple(left_mask_in),
@@ -1958,7 +2111,8 @@ def run_ego_wilor(
                 init_opacity_hand           = init_opacity_hand_eff,
                 init_opacity_bg             = init_opacity_bg_eff,
                 init_gaussian_scale_factor  = init_gaussian_scale_factor,
-                render_every                = simple_refinement_render_every,
+                render_every                = 0 if fast else simple_refinement_render_every,
+                fused_checks                = fast,
                 progress_dir                = refined_simple_progress_dir,
                 debug_frame_idx             = (
                     simple_refinement_debug_frame
@@ -1982,7 +2136,7 @@ def run_ego_wilor(
         if (not using_provided_object_mesh) and os.path.exists(refined_object_scale_json):
             learned_simple_object_scale = _load_scale_json(refined_object_scale_json, 1.0)
             print(f"  Loaded simple-refined object scale: {learned_simple_object_scale:.4f}")
-        if not _step(f"Render refined-simple {refine_source} overlay",
+        if not _diag(f"Render refined-simple {refine_source} overlay",
                      os.path.exists(refined_simple_hand_overlay)):
             if not _has_files(refined_simple_poses_dir):
                 raise FileNotFoundError(
@@ -2505,6 +2659,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--refinement_second_pass_batch_size", type=int, default=None,
                    help="Batch size for pass 2. Defaults to 4x pass-1.")
     p.add_argument("--dev", action="store_true")
+    p.add_argument("--fast", action="store_true",
+                   help="Skip diagnostic-only work (overlay videos, unused WiLoR frames, EKF "
+                        "smoothing when refinement runs). result/ is unchanged.")
     return p.parse_args()
 
 
@@ -2514,6 +2671,7 @@ def run_from_args(args: argparse.Namespace) -> None:
         output_dir              = args.output_dir,
         sam2_weights            = args.sam2_weights,
         wilor_weights           = args.wilor_weights,
+        fast                    = args.fast,
         reference_frame         = args.reference_frame,
         sam2_bbox_pad           = args.sam2_bbox_pad,
         sam2_square_wilor_bboxes = args.sam2_square_wilor_bboxes,

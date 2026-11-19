@@ -129,13 +129,27 @@ class SimpleFrameCache:
             for _ in hand_mask_dirs
         ]
 
-        for t, fidx in enumerate(tqdm(frame_indices, ncols=80, desc="caching", unit="frame")):
+        def _load_one(t_fidx):
+            t, fidx = t_fidx
             self.rgb[t] = _load_rgb_resized(_find_frame_file(frames_dir, fidx), width, height)
             if self.depth is not None and depth_dir is not None:
                 self.depth[t] = _load_depth_resized(os.path.join(depth_dir, f"{fidx:06d}.png"), width, height)
             self.obj_mask[t] = _load_mask_or_zero(object_mask_dir, fidx, width, height)
             for k, mask_dir in enumerate(hand_mask_dirs):
                 self.hand_masks[k][t] = _load_mask_or_zero(mask_dir, fidx, width, height)
+
+        workers = int(os.environ.get("V2D_GSPLAT_LOAD_WORKERS", "0"))
+        if workers > 1:
+            # Each frame writes only its own slot, so a pool gives the same cache (the
+            # PNG/JPEG decode releases the GIL); profile: 22 s of serial decode at init.
+            from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+            with ThreadPoolExecutor(workers) as pool:
+                list(tqdm(pool.map(_load_one, enumerate(frame_indices)), total=len(frame_indices),
+                          ncols=80, desc="caching", unit="frame"))
+        else:
+            for t_fidx in enumerate(tqdm(frame_indices, ncols=80, desc="caching", unit="frame")):
+                _load_one(t_fidx)
 
         if valid_mask_threshold <= 0:
             valid = torch.ones((height, width), dtype=torch.float32)
@@ -557,14 +571,56 @@ class VGG16PerceptualLoss(torch.nn.Module):
         pred_rgb: torch.Tensor,
         target_rgb: torch.Tensor,
         valid_mask: torch.Tensor | None = None,
+        cache_key: object | None = None,
     ) -> torch.Tensor:
         pred_features = self._features(self._preprocess(pred_rgb, valid_mask))
-        with torch.no_grad():
-            target_features = self._features(self._preprocess(target_rgb, valid_mask))
+        cache = self.__dict__.setdefault("_target_cache", {})
+        if cache_key is not None and cache_key in cache:
+            target_features = cache[cache_key]
+        else:
+            with torch.no_grad():
+                target_features = self._features(self._preprocess(target_rgb, valid_mask))
+            if cache_key is not None:
+                cache[cache_key] = target_features
         loss = pred_rgb.new_zeros(())
         for pred_f, target_f in zip(pred_features, target_features):
             loss = loss + F.l1_loss(pred_f, target_f)
         return loss / float(max(len(pred_features), 1))
+
+
+# Round-2 speed switches (tools/fastrecon). All default OFF: with none set, every code path
+# below is the original one.
+#   V2D_GSPLAT_SHARED_MANO   one batched MANO forward per hand per step over all frames, reused
+#                            by the rendered frames and the vertex-smoothness term (was ~22
+#                            MANO calls per step: 1 per rendered frame/hand + 7 chunks/hand).
+#   V2D_GSPLAT_VGG_CACHE     target-image VGG features computed once per frame, not per step
+#                            (target image and valid mask are constant).
+#   V2D_GSPLAT_MICRO         reuse constant label blocks / smoothness index tensors.
+#   V2D_GSPLAT_COMPILE       torch.compile the elementwise quaternion->matrix helper.
+_FAST_SHARED_MANO = bool(os.environ.get("V2D_GSPLAT_SHARED_MANO"))
+_FAST_VGG_CACHE = bool(os.environ.get("V2D_GSPLAT_VGG_CACHE"))
+_FAST_MICRO = bool(os.environ.get("V2D_GSPLAT_MICRO"))
+_FAST_COMPILE = bool(os.environ.get("V2D_GSPLAT_COMPILE"))
+# Per-step cache: slot index -> (verts (T, N, 3), R_per_vert (T, N, 3, 3)), all frames.
+_STEP_HAND_CACHE: dict | None = None
+_LABEL_CACHE: dict = {}
+_BG_IDX_CACHE: dict = {}
+
+
+def _install_compiled_helpers() -> None:
+    """V2D_GSPLAT_COMPILE: fuse quat_to_rotmat's ~30 elementwise ops (fwd + bwd) per call."""
+    from . import background as _bg_mod, gaussians as _g_mod, pose_fields as _pf_mod
+    compiled = torch.compile(_g_mod.quat_to_rotmat, dynamic=True)
+    for mod in (_g_mod, _pf_mod, _bg_mod):
+        if hasattr(mod, "quat_to_rotmat"):
+            mod.quat_to_rotmat = compiled
+
+
+def _hand_verts_for(slot_i: int, slot: "HandSlot", local_t: int):
+    if _STEP_HAND_CACHE is not None and slot_i in _STEP_HAND_CACHE:
+        verts_all, R_all = _STEP_HAND_CACHE[slot_i]
+        return verts_all[local_t], R_all[local_t]
+    return slot.pose_field.posed_verts_and_rotmats_camera(local_t)
 
 
 def _render_2dgs_features(
@@ -669,11 +725,11 @@ def _current_frame(
 ) -> GaussianFrame:
     R_obj, t_obj = obj_pose_field(t)
     frames = [obj_gaussians(R_obj, t_obj)]
-    for slot in hand_slots:
+    for slot_i, slot in enumerate(hand_slots):
         local_t = slot.frame_to_pos.get(fidx)
         if local_t is None:
             continue
-        verts, Rv = slot.pose_field.posed_verts_and_rotmats_camera(local_t)
+        verts, Rv = _hand_verts_for(slot_i, slot, local_t)
         frames.append(slot.gaussians(verts, Rv))
     if bg_gaussians is not None and bg_pose_field is not None:
         R_bg, t_bg = bg_pose_field(t)
@@ -682,6 +738,21 @@ def _current_frame(
 
 
 def _label_block(
+    n: int,
+    n_classes: int,
+    class_idx: int | None,
+    device: torch.device,
+) -> torch.Tensor:
+    if _FAST_MICRO:
+        key = (int(n), int(n_classes), class_idx, str(device))
+        block = _LABEL_CACHE.get(key)
+        if block is None:
+            block = _LABEL_CACHE[key] = _label_block_uncached(n, n_classes, class_idx, device)
+        return block
+    return _label_block_uncached(n, n_classes, class_idx, device)
+
+
+def _label_block_uncached(
     n: int,
     n_classes: int,
     class_idx: int | None,
@@ -712,7 +783,7 @@ def _current_frame_with_labels(
         local_t = slot.frame_to_pos.get(fidx)
         if local_t is None:
             continue
-        verts, Rv = slot.pose_field.posed_verts_and_rotmats_camera(local_t)
+        verts, Rv = _hand_verts_for(slot_i, slot, local_t)
         hand_frame = slot.gaussians(verts, Rv)
         frames.append(hand_frame)
         labels.append(_label_block(
@@ -833,6 +904,7 @@ def _hand_vertex_smoothness(
     max_vertices: int,
     scale: float,
     frame_chunk_size: int = 64,
+    slot_i: int | None = None,
 ) -> torch.Tensor:
     n = slot.pose_field.num_frames()
     if n < 3:
@@ -844,6 +916,18 @@ def _hand_vertex_smoothness(
         device,
     )
     object_frame_to_pos = {fidx: i for i, fidx in enumerate(obj_pose_field.frame_indices)}
+    if slot_i is not None and _STEP_HAND_CACHE is not None and slot_i in _STEP_HAND_CACHE:
+        verts = _STEP_HAND_CACHE[slot_i][0].index_select(1, idx)
+        if bg_pose_field is not None:
+            key = ("all", id(slot))
+            bg_idx = _BG_IDX_CACHE.get(key)
+            if bg_idx is None:
+                bg_idx = _BG_IDX_CACHE[key] = torch.tensor(
+                    [object_frame_to_pos[fidx] for fidx in slot.pose_field.frame_indices],
+                    device=device, dtype=torch.long,
+                )
+            verts = _camera_points_to_world(verts, bg_pose_field, bg_idx)
+        return _point_acceleration_smoothness(verts, scale)
     chunks: list[torch.Tensor] = []
     for start in range(0, n, int(frame_chunk_size)):
         end = min(start + int(frame_chunk_size), n)
@@ -851,11 +935,16 @@ def _hand_vertex_smoothness(
         verts, _ = slot.pose_field.batched_posed_verts_and_rotmats_camera(t_idx)
         verts = verts.index_select(1, idx)
         if bg_pose_field is not None:
-            bg_idx = torch.tensor(
-                [object_frame_to_pos[fidx] for fidx in slot.pose_field.frame_indices[start:end]],
-                device=device,
-                dtype=torch.long,
-            )
+            key = (id(slot), start, end)
+            bg_idx = _BG_IDX_CACHE.get(key) if _FAST_MICRO else None
+            if bg_idx is None:
+                bg_idx = torch.tensor(
+                    [object_frame_to_pos[fidx] for fidx in slot.pose_field.frame_indices[start:end]],
+                    device=device,
+                    dtype=torch.long,
+                )
+                if _FAST_MICRO:
+                    _BG_IDX_CACHE[key] = bg_idx
             verts = _camera_points_to_world(verts, bg_pose_field, bg_idx)
         chunks.append(verts)
     verts_world = torch.cat(chunks, dim=0)
@@ -884,13 +973,14 @@ def _vertex_smoothness(
             vertex_smoothness_scale,
         )
     ]
-    for slot in hand_slots:
+    for slot_i, slot in enumerate(hand_slots):
         losses.append(_hand_vertex_smoothness(
             slot,
             obj_pose_field,
             bg_pose_field,
             vertex_smoothness_max_vertices,
             vertex_smoothness_scale,
+            slot_i=slot_i,
         ))
     return float(w_vertex_smoothness) * torch.stack(losses).mean()
 
@@ -1211,6 +1301,7 @@ def refine_simple(
     init_gaussian_scale_factor: float = 1.0,
     render_every: int = 25,
     progress_dir: str | None = None,
+    fused_checks: bool = False,
     debug_frame_idx: int | None = None,
     fps: float = 30.0,
     seed: int = 0,
@@ -1237,6 +1328,11 @@ def refine_simple(
 
     torch.manual_seed(seed)
     device_t = torch.device(device)
+    if _FAST_COMPILE:
+        _install_compiled_helpers()
+    if any((_FAST_SHARED_MANO, _FAST_VGG_CACHE, _FAST_MICRO, _FAST_COMPILE)):
+        print(f"gsplat speed switches: shared_mano={_FAST_SHARED_MANO} vgg_cache={_FAST_VGG_CACHE} "
+              f"micro={_FAST_MICRO} compile={_FAST_COMPILE}")
 
     K, width, height = load_intrinsics(intrinsics_path, str(device_t))
     if train_resolution_scale != 1.0:
@@ -1571,6 +1667,14 @@ def refine_simple(
             perceptual = obj_pose_field.axis_angle.new_zeros(())
             penetration = obj_pose_field.axis_angle.new_zeros(())
             vertex_smooth = obj_pose_field.axis_angle.new_zeros(())
+            global _STEP_HAND_CACHE
+            if _FAST_SHARED_MANO and hand_slots:
+                _STEP_HAND_CACHE = {
+                    slot_i: slot.pose_field.batched_posed_verts_and_rotmats_camera(
+                        torch.arange(slot.pose_field.num_frames(), device=device_t, dtype=torch.long)
+                    )
+                    for slot_i, slot in enumerate(hand_slots)
+                }
             for t in batch:
                 fidx = frame_indices[t]
                 target = _target_rgb(cache, t, device_t, mask_background)
@@ -1598,7 +1702,9 @@ def refine_simple(
                 per_pixel = (pred - target).abs().sum(dim=-1)
                 photo = photo + (per_pixel * valid_mask).sum() / valid_denom
                 if perceptual_loss_fn is not None:
-                    perceptual = perceptual + perceptual_loss_fn(pred, target, valid_mask)
+                    perceptual = perceptual + perceptual_loss_fn(
+                        pred, target, valid_mask, cache_key=(t if _FAST_VGG_CACHE else None)
+                    )
                 if use_relative_depth_loss:
                     rendered_depth, rendered_alpha = _render_2dgs_depth(frame, K, width, height)
                     target_depth = cache.depth[t].to(device_t, non_blocking=True)
@@ -1646,6 +1752,7 @@ def refine_simple(
                 vertex_smoothness_scale,
                 vertex_smoothness_max_vertices,
             ) / float(n_batches)
+            _STEP_HAND_CACHE = None  # parameters change at optimizer.step(); never reuse
             loss = (
                 photo
                 + float(w_mask) * mask_l1
@@ -1655,56 +1762,94 @@ def refine_simple(
                 + smooth
                 + vertex_smooth
             )
-            if not bool(torch.isfinite(loss)):
-                print(
-                    f"WARNING: skipping non-finite refinement loss at step={step}, "
-                    f"frames={[frame_indices[t] for t in batch]}"
+            if fused_checks:
+                # One host sync per step instead of one per parameter. Equivalent to checking
+                # loss -> every gradient -> grad norm in turn: a non-finite loss or gradient
+                # makes the global norm non-finite, and a skipped step zeroes the gradients,
+                # so the parameters and optimizer state end up exactly as before.
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trainable_params, max_norm=max_grad_norm, error_if_nonfinite=False
                 )
-                optimizer.zero_grad(set_to_none=True)
-                step += 1
-                pbar.update(1)
-                continue
+                if not bool(torch.isfinite(loss) & torch.isfinite(grad_norm)):
+                    reason = (
+                        "loss" if not bool(torch.isfinite(loss))
+                        else "gradient norm"
+                    )
+                    print(
+                        f"WARNING: skipping non-finite refinement {reason} at step={step}, "
+                        f"frames={[frame_indices[t] for t in batch]}"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
+                    pbar.update(1)
+                    continue
 
-            loss.backward()
-            bad_gradient = _first_nonfinite_tensor([
-                (f"gradient for group={group_i} param={param_i} shape={tuple(param.shape)}", param.grad)
-                for group_i, group in enumerate(optimizer.param_groups)
-                for param_i, param in enumerate(group["params"])
-            ])
-            if bad_gradient is not None:
-                print(
-                    f"WARNING: skipping non-finite refinement gradient at step={step}, "
-                    f"frames={[frame_indices[t] for t in batch]}: {bad_gradient}"
-                )
-                optimizer.zero_grad(set_to_none=True)
-                step += 1
-                pbar.update(1)
-                continue
+                optimizer.step()
+                params_finite = torch.stack([
+                    torch.isfinite(param).all() for param in trainable_params
+                ]).all()
+                if not bool(params_finite):
+                    bad_parameter = _first_nonfinite_tensor([
+                        (f"group={group_i} param={param_i} shape={tuple(param.shape)}", param)
+                        for group_i, group in enumerate(optimizer.param_groups)
+                        for param_i, param in enumerate(group["params"])
+                    ])
+                    raise FloatingPointError(
+                        f"Non-finite refinement parameter after optimizer step {step}, "
+                        f"frames={[frame_indices[t] for t in batch]}: {bad_parameter}"
+                    )
+            else:
+                if not bool(torch.isfinite(loss)):
+                    print(
+                        f"WARNING: skipping non-finite refinement loss at step={step}, "
+                        f"frames={[frame_indices[t] for t in batch]}"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
+                    pbar.update(1)
+                    continue
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                trainable_params, max_norm=max_grad_norm, error_if_nonfinite=False
-            )
-            if not bool(torch.isfinite(grad_norm)):
-                print(
-                    f"WARNING: skipping non-finite gradient norm at step={step}, "
-                    f"frames={[frame_indices[t] for t in batch]}"
-                )
-                optimizer.zero_grad(set_to_none=True)
-                step += 1
-                pbar.update(1)
-                continue
+                loss.backward()
+                bad_gradient = _first_nonfinite_tensor([
+                    (f"gradient for group={group_i} param={param_i} shape={tuple(param.shape)}", param.grad)
+                    for group_i, group in enumerate(optimizer.param_groups)
+                    for param_i, param in enumerate(group["params"])
+                ])
+                if bad_gradient is not None:
+                    print(
+                        f"WARNING: skipping non-finite refinement gradient at step={step}, "
+                        f"frames={[frame_indices[t] for t in batch]}: {bad_gradient}"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
+                    pbar.update(1)
+                    continue
 
-            optimizer.step()
-            bad_parameter = _first_nonfinite_tensor([
-                (f"group={group_i} param={param_i} shape={tuple(param.shape)}", param)
-                for group_i, group in enumerate(optimizer.param_groups)
-                for param_i, param in enumerate(group["params"])
-            ])
-            if bad_parameter is not None:
-                raise FloatingPointError(
-                    f"Non-finite refinement parameter after optimizer step {step}, "
-                    f"frames={[frame_indices[t] for t in batch]}: {bad_parameter}"
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    trainable_params, max_norm=max_grad_norm, error_if_nonfinite=False
                 )
+                if not bool(torch.isfinite(grad_norm)):
+                    print(
+                        f"WARNING: skipping non-finite gradient norm at step={step}, "
+                        f"frames={[frame_indices[t] for t in batch]}"
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
+                    pbar.update(1)
+                    continue
+
+                optimizer.step()
+                bad_parameter = _first_nonfinite_tensor([
+                    (f"group={group_i} param={param_i} shape={tuple(param.shape)}", param)
+                    for group_i, group in enumerate(optimizer.param_groups)
+                    for param_i, param in enumerate(group["params"])
+                ])
+                if bad_parameter is not None:
+                    raise FloatingPointError(
+                        f"Non-finite refinement parameter after optimizer step {step}, "
+                        f"frames={[frame_indices[t] for t in batch]}: {bad_parameter}"
+                    )
             if bg_pose_field is not None:
                 _anchor_camera_reference(bg_pose_field)
             step += 1
@@ -1715,7 +1860,8 @@ def refine_simple(
                     mask_background=mask_background,
                 )
             pbar.update(1)
-            pbar.set_postfix(
+            if not fused_checks or step % 20 == 0 or step == total_steps:  # float() = host sync
+              pbar.set_postfix(
                 photo=f"{float(photo.detach()):.4f}",
                 mask=f"{float(mask_l1.detach()):.4f}",
                 rdepth=f"{float(relative_depth.detach()):.4f}",
@@ -1763,6 +1909,9 @@ def refine_simple(
         _save_camera_poses(bg_pose_field, frame_indices, refined_camera_poses_dir)
         print(f"Wrote refined camera/background poses -> {refined_camera_poses_dir}")
 
+    if not overlay_path:
+        print("Overlay video skipped (no --overlay_path)")
+        return
     _write_overlay_video(
         output_path=overlay_path,
         cache=cache,
@@ -1790,7 +1939,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--object_poses_dir", required=True)
     p.add_argument("--object_mask_dir", required=True)
     p.add_argument("--refined_object_poses_dir", required=True)
-    p.add_argument("--overlay_path", required=True)
+    p.add_argument("--overlay_path", default="",
+                   help="Diagnostic overlay video; omitted/empty skips it.")
     p.add_argument("--refined_object_scale_path", default=None,
                    help="Optional JSON path for learned global object scale. Object pose JSONs remain rigid.")
     p.add_argument("--left_hand_pose_dir", default=None)
@@ -1876,6 +2026,8 @@ def parse_args() -> argparse.Namespace:
                    help="Multiplier for all initial Gaussian scales/radii.")
     p.add_argument("--render_every", type=int, default=25,
                    help="Write a target/render/error progress panel every N optimizer steps. 0 disables.")
+    p.add_argument("--fused_checks", action="store_true",
+                   help="One host sync per step for the finiteness guards (same results, faster).")
     p.add_argument("--progress_dir", default=None,
                    help="Directory for simple-refinement progress PNGs. Defaults next to overlay_path.")
     p.add_argument("--debug_frame_idx", type=int, default=None,

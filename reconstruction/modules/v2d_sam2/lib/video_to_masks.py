@@ -41,6 +41,12 @@ def _validate_prompt(prompt) -> None:
         )
 
 
+def _predictor_key(weights_dir: str) -> tuple:
+    return ("sam2.predictor", os.path.abspath(weights_dir),
+            os.environ.get("CONFIG_FILE", "configs/sam2.1/sam2.1_hiera_l.yaml"),
+            os.environ.get("CHECKPOINT_FILE", "sam2.1_hiera_large.pt"))
+
+
 def _get_predictor(weights_dir: str):
     global _predictor
     if _predictor is None:
@@ -48,6 +54,10 @@ def _get_predictor(weights_dir: str):
         checkpoint_file = os.environ.get("CHECKPOINT_FILE", "sam2.1_hiera_large.pt")
 
         os.environ["HYDRA_CONFIG_SEARCH_PATH"] = weights_dir
+        # Built ahead of the call by a resident process (lib/_resident.py), if any.
+        from v2d.common import resident
+        _predictor = resident.take(_predictor_key(weights_dir))
+    if _predictor is None:
         ckpt_path = os.path.join(weights_dir, checkpoint_file)
         _predictor = build_sam2_video_predictor_low_mem(
             config_file=config_file,

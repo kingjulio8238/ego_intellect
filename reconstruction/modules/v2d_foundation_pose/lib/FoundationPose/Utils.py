@@ -569,6 +569,15 @@ def compute_mesh_diameter(model_pts=None, mesh=None, n_sample=1000):
   else:
     ids = np.random.choice(len(model_pts), size=min(n_sample, len(model_pts)), replace=False)
     pts = model_pts[ids]
+  if os.environ.get("V2D_FP_FAST_DIAMETER"):
+    # The farthest pair of a point set lies on its convex hull, and each pair's distance is
+    # computed with the same arithmetic as below, so the max is bit-identical; the full
+    # 10k x 10k pairwise matrix (1.5 s per call, 38 calls per scale search) is not needed.
+    try:
+      from scipy.spatial import ConvexHull
+      pts = pts[ConvexHull(pts).vertices]
+    except Exception:
+      pass
   dists = np.linalg.norm(pts[None]-pts[:,None], axis=-1)
   diameter = dists.max()
   return diameter

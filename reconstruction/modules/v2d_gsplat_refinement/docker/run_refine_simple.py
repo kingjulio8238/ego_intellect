@@ -73,6 +73,7 @@ def run_refine_simple(
     init_gaussian_scale_factor: float = 1.0,
     render_every: int = 25,
     progress_dir: str | None = None,
+    fused_checks: bool = False,
     debug_frame_idx: int | None = None,
     fps: float = 30.0,
     seed: int = 0,
@@ -111,8 +112,9 @@ def run_refine_simple(
 
     outputs: dict[str, str] = {
         "refined_object_poses_dir": refined_object_poses_dir,
-        "overlay_path":             overlay_path,
     }
+    if overlay_path:  # "" = skip the diagnostic overlay video (--fast)
+        outputs["overlay_path"] = overlay_path
     if refined_object_scale_path is not None:
         outputs["refined_object_scale_path"] = refined_object_scale_path
     for k, v in {
@@ -172,6 +174,7 @@ def run_refine_simple(
         "init_opacity_bg":       init_opacity_bg,
         "init_gaussian_scale_factor": init_gaussian_scale_factor,
         "render_every":          render_every,
+        "fused_checks":          fused_checks,
         "debug_frame_idx":       debug_frame_idx,
         "fps":                   fps,
         "seed":                  seed,

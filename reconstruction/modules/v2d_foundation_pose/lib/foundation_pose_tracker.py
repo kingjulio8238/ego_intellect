@@ -112,6 +112,10 @@ def _weighted_mean_se3(particles: np.ndarray, weights: np.ndarray) -> np.ndarray
     return M
 
 
+def predictor_backend_key(backend: str, weights_dir) -> tuple:
+    return ("foundation_pose.backend", backend, os.path.abspath(str(weights_dir)))
+
+
 class FoundationPoseTracker:
     """Wraps FoundationPose for stateful 6-DoF object tracking."""
 
@@ -121,7 +125,11 @@ class FoundationPoseTracker:
         weights_dir: str,
         backend: str = DEFAULT_BACKEND,
     ) -> None:
-        predictor_backend = create_predictor_backend(backend, weights_dir)
+        # Built ahead of the call by a resident process (lib/_resident.py), if any.
+        from v2d.common import resident
+        predictor_backend = resident.take(predictor_backend_key(backend, weights_dir))
+        if predictor_backend is None:
+            predictor_backend = create_predictor_backend(backend, weights_dir)
         self._scorer = predictor_backend.scorer
         self._refiner = predictor_backend.refiner
         self.runtime_info = predictor_backend.runtime_info

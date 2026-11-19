@@ -41,8 +41,16 @@ try:
 except Exception as _e:
     print(f"Warning: could not patch render_frames backend: {_e}")
 
+def _pipeline_key(weights_dir: str) -> tuple:
+    return ("sam3d.pipeline", os.path.abspath(weights_dir), os.environ.get("HF_HOME"))
+
+
 def _get_pipeline(weights_dir: str):
     global _pipeline
+    if _pipeline is None:
+        # Built ahead of the call by a resident process (lib/_resident.py), if any.
+        from v2d.common import resident
+        _pipeline = resident.take(_pipeline_key(weights_dir))
     if _pipeline is None:
         possible_config_paths = [
             os.path.join(weights_dir, "hf-download", "checkpoints", "pipeline.yaml"),

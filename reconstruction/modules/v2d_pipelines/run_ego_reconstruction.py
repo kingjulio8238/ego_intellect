@@ -598,6 +598,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reregister_iou_thresh", type=float, default=0.3)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--dev", action="store_true")
+    p.add_argument("--fast", action="store_true",
+                   help="Skip diagnostic-only work; result bundles are unchanged.")
 
     p.add_argument("--sam2_bbox_pad", type=float, default=0.05)
     p.set_defaults(sam2_square_wilor_bboxes=False)
@@ -728,13 +730,52 @@ def _run_dynhamr(args: argparse.Namespace) -> Path:
     )
 
 
+def _start_early_geocalib(args: argparse.Namespace):
+    """--fast: GeoCalib (gravity for the final alignment) needs only the undistorted
+    video, so start it as soon as AnyCalib has written it instead of after refinement.
+    The finalize step's own _run_geocalib_postprocess call then finds its outputs done.
+    Returns a wait() callable that re-raises any error."""
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    outcome: dict = {}
+
+    def worker() -> None:
+        try:
+            video = _postprocess_video_path(args)
+            deadline = time.time() + 3600
+            while not video.exists():
+                if time.time() > deadline:
+                    raise TimeoutError(f"{video} never appeared")
+                time.sleep(2)
+            _run_geocalib_postprocess(args)
+        except BaseException as exc:  # noqa: BLE001 - surfaced by wait()
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=worker, name="early-geocalib", daemon=True)
+    thread.start()
+
+    def wait() -> None:
+        thread.join()
+        if "error" in outcome:
+            raise outcome["error"]
+
+    return wait
+
+
 def _run_hamer(args: argparse.Namespace) -> Path:
     run_ego_wilor = _import_run_ego_wilor()
+    wait_geocalib = (
+        _start_early_geocalib(args)
+        if args.fast and args.run_gravity_alignment and args.run_droid_slam
+        else None
+    )
     run_ego_wilor(
         video_path=args.video,
         output_dir=args.output_dir,
         sam2_weights=args.sam2_weights,
         wilor_weights=args.wilor_weights,
+        fast=args.fast,
         reference_frame=args.reference_frame,
         sam2_bbox_pad=args.sam2_bbox_pad,
         sam2_square_wilor_bboxes=args.sam2_square_wilor_bboxes,
@@ -819,6 +860,8 @@ def _run_hamer(args: argparse.Namespace) -> Path:
         init_gaussian_scale_factor=args.gsplat_refine_init_gaussian_scale_factor,
         dev=args.dev,
     )
+    if wait_geocalib is not None:
+        wait_geocalib()
     return _finalize_result_bundle(
         args,
         Path(args.output_dir).resolve() / "result",

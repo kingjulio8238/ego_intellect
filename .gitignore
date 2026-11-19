@@ -13,3 +13,8 @@ Datagen_Checkpoints/
 
 # Local reconstruction-to-GR00T runs and active-run pointer
 .e2e/
+
+# Python bytecode and macOS metadata
+__pycache__/
+*.pyc
+.DS_Store
