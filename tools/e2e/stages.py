@@ -614,6 +614,11 @@ def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
             argv = (
                 "scripts/rsl_rl/replay_metrics.py",
                 "--headless",
+                # CPU PhysX for this single-env replay: 4.5 s instead of 17 s (GPU launch
+                # overhead dominates at one env), same QA verdicts on the 7 calibration
+                # clips (docs/pipeline/OPTIMIZATION.md, simulate).
+                "--device",
+                "cpu",
                 "--task",
                 task,
                 "--motion_file",

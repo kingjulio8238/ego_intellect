@@ -422,7 +422,28 @@ def robotic_grounding_image() -> modal.Image:
         # Same build context as `workflow/run.sh build`; Modal honours robotic_grounding/.dockerignore.
         image = image.dockerfile_commands([instruction], context_dir=RG_ROOT)
     # The editable install can move pyarrow/numpy, so the pyarrow check runs after it.
-    return image.entrypoint([]).run_commands(ISAAC_PYARROW_COMPAT, CAPTURE_IMAGE_ENV)
+    image = image.entrypoint([]).run_commands(ISAAC_PYARROW_COMPAT, CAPTURE_IMAGE_ENV)
+    # Isaac warm-up baked into the image: the first Kit launch in a fresh container fetches
+    # and unpacks extensions (URDF importer) into ~/.local/share/ov, compiles every
+    # extension's .pyc and fills Kit's shader/derived-data caches: ~24 s that every clip's
+    # `simulate` paid (59 s cold vs 35 s warm, simulate phase 2026-11-20). One short replay
+    # of the bundled sample clip on a GPU builder leaves those caches in the image; the run's
+    # own outputs (/tmp) are dropped. Reruns with part 3, i.e. on robotic_grounding edits.
+    return image.run_commands(RG_ISAAC_WARMUP, gpu=C.RG_GPU)
+
+
+# One 20-step physics replay of the bundled tissue_box_simple sample (the `simulate` command
+# line, CPU physics as there); fails the build if the replay does not finish.
+RG_ISAAC_WARMUP = (
+    "cd /workspace/video_to_data/robotic_grounding "
+    "&& export ACCEPT_EULA=Y PRIVACY_CONSENT=Y OMNI_KIT_ACCEPT_EULA=YES "
+    "&& /workspace/isaaclab/isaaclab.sh -p scripts/rsl_rl/replay_metrics.py --headless --device cpu "
+    "--task VegaSharpa-WholeBody-Manip-v0 "
+    "--motion_file ego_recon/processed/sequence_id=tissue_box_simple/robot_name=vega_sharpa "
+    "--output /tmp/v2d_warm/replay_metrics.json --states_out none --max_steps 20 > /tmp/v2d_warm.log 2>&1; "
+    "grep -q REPLAY_METRICS /tmp/v2d_warm.log || { tail -40 /tmp/v2d_warm.log; exit 1; }; "
+    "rm -rf /tmp/v2d_warm /tmp/v2d_warm.log /tmp/IsaacLab /tmp/isaaclab && echo 'isaac warm-up OK'"
+)
 
 
 def control_image() -> modal.Image:

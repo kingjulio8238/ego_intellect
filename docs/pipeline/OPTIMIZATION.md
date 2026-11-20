@@ -12,7 +12,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 | 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **Done**: 5.3 min → 0 on the critical path; numeric QA in `simulate` (+1 min, same boot); overlay video 20 s after delivery for flagged + 1 in 20 — see below |
 | 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | **Paused** (2026-11-20): test validated, no cheap proof yet — see below |
 | 4 | Retarget (3.0 min) | Next-largest existing stage | **Done** (Vega): ~3.2 → ~1.3 min (−60%) — see below |
-| 5 | Environment build (2.0 min) | | Todo |
+| 5 | Environment build (2.0 min) | | **Done**: `simulate` ~66–70 s → ~30–36 s (−50%) — see below |
 | 6 | Triage gate (new) | Saves the full per-clip cost of every rejected clip | Todo |
 | 7 | Ingest (1.4 min) | Mostly container-start overhead | Todo |
 | 8 | Setup | One-time per workspace; cold image loads 5–10 min per module on a new workspace | Todo |
@@ -364,6 +364,36 @@ Gate (stock 100 iterations vs 30, same container, both clips):
 Sweep: 20 iterations also kept task errors but drifted joints further (p95 1.4e-2); 50 gave
 no better agreement than 30. Spend ~$1.5 (julian-41138).
 
+## Environment build + physics QA (stage 7, `simulate`), 2026-11-20
+
+`replay_metrics.py` on b3_tb2 / b3_tbseed (Modal L40S). In production every clip's `simulate`
+is the first Kit launch in its container (the robot-step container runs retarget first, which
+does not start Kit), so the cold numbers are the real ones.
+
+| Part | Before | Now | How |
+|---|---|---|---|
+| Kit launch + imports | ~17 s | ~17 s | untouched |
+| First-launch extras (URDF importer extension fetched into `~/.local/share/ov`, extension `.pyc`, Kit shader/derived-data caches) | ~24 s | 0 | baked into the rg image: a 20-step replay of the bundled `tissue_box_simple` sample on a GPU builder (`RG_ISAAC_WARMUP`, `tools/modal_v2d/images.py`) |
+| Scene build (`gym.make`, robot URDF → USD, sim start) | 8–11 s | 8–9 s | untouched |
+| Replay (170 steps) | 15–17 s (GPU PhysX, 100 ms/step) | 4.5 s (CPU PhysX, 26 ms/step) | `--device cpu` in the stage |
+| **Wall** | **~66–70 s** (cold; 46 s warm) | **~30–36 s** cold | **−50%** |
+
+Why CPU: at one environment the GPU pipeline is launch-bound. Per env step (instrumented):
+5 physics substeps 34 ms, scene read/write 19 ms, action application 8 ms, the managers 12 ms.
+
+Gate (CPU vs GPU, same image):
+- the 7 calibration clips keep their verdicts: tissue_box_simple, b3_tb2, b3_tbseed pass;
+  float4, sink2, shift5, lag25 are flagged, by the same checks except where the replay ends in
+  the first 2–5 steps (sink2, shift5: those values are chaotic on either device);
+- good clips: every check within 1.4 mm of GPU (GPU run-to-run noise is 1–2 mm on the same
+  checks); completion equal; grasp drift is kinematic and identical;
+- `replay_states.npz` is unchanged in format (the overlay renderer reads it as before).
+
+Also fixed: `replay_metrics.py` exited 0 when it crashed (Kit's launcher swallows the
+exception), so a broken QA replay looked like a pass with a missing report. It now exits 1.
+Cost: robotic_grounding edits add the ~1 min warm-up step to the image rebuild.
+Spend ~$1.5 (julian-41138).
+
 ## Next: todo for the remaining stages (for review)
 
 Same method as reconstruct: profile → isolate each call → smoke levers in parallel against
@@ -413,9 +443,10 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
 - [ ] Not done (out of scope): vectorized/GPU IK, the floating-hand path, `prepare` (22 s,
       mostly the loader container start).
 
-**5. Environment build (2.0 min)**
-- [ ] Profile asset conversion (mesh → USD, collision decomposition) vs Kit boot.
-- [ ] Levers: cache CoACD/collision results by mesh hash, batch several clips per Kit process.
+**5. Environment build (2.0 min)** — done 2026-11-20, see "Environment build + physics QA" below
+- [x] Profile (Kit launch, first-launch caches, scene build, replay).
+- [x] CPU PhysX for the single-env QA replay; Isaac first-launch caches baked into the image.
+- [ ] Not done: Kit launch itself (~17 s); several clips per Kit process (batching change).
 
 **6. Triage gate (new)**
 - [ ] Cheap per-clip checks before any GPU: duration, resolution, blur, hand visibility

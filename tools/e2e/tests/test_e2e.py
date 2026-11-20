@@ -1092,6 +1092,7 @@ class StageTests(Fixture):
         command = stage.commands[0].argv
         self.assertIn("scripts/rsl_rl/replay_metrics.py", command)
         self.assertNotIn("--enable_cameras", command)
+        self.assertEqual(command[command.index("--device") + 1], "cpu")
         self.assertTrue(
             command[command.index("--output") + 1].endswith("/simulate/vega/replay_metrics.json")
         )

@@ -424,6 +424,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    code = main()
+    try:
+        code = main()
+    except BaseException:  # noqa: BLE001 - Kit's launcher exits 0 on an uncaught exception
+        import traceback
+
+        traceback.print_exc()
+        sys.stdout.flush()
+        os._exit(1)
     simulation_app.close()
     sys.exit(code)
