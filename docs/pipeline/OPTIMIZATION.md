@@ -10,7 +10,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 |---|---|---|---|
 | 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (rounds 1–2)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip; sharding across workspaces, preemption-safe |
 | 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **Done**: 5.3 min → 0 on the critical path; numeric QA in `simulate` (+1 min, same boot); overlay video 20 s after delivery for flagged + 1 in 20 — see below |
-| 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | Todo |
+| 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | **Paused** (2026-11-20): test validated, no cheap proof yet — see below |
 | 4 | Retarget (3.0 min) | Next-largest existing stage | Todo |
 | 5 | Environment build (2.0 min) | | Todo |
 | 6 | Triage gate (new) | Saves the full per-clip cost of every rejected clip | Todo |
@@ -304,6 +304,34 @@ or ≥20 % cheaper per clip, and Isaac Sim working); revisit when the two blocke
 run driver 580.x for Isaac Sim 5.1; and (b) the executor packs several calls per GPU — the 96 GB
 is Blackwell's real advantage for this pipeline, not per-call speed.
 
+## Solvability check (stage 9), 2026-11-20 — paused
+
+Question: can a policy track this clip in physics? The full answer today is the expert recipe
+(PPO, 4096 envs, 20k iterations; 13.4 h / ~$38 at 128 envs). Goal was minutes per clip.
+
+**The test is valid.** `solvability.py` evaluates a policy from frame 0 with the VOC assist off
+and the recipe's terminations. The bundled tissue-box expert passes it 8/8 (whole clip,
+`lift_hold` 100%, object error 1.3 cm); the zero-residual replay fails at 40% (the lift).
+
+| Candidate | Result | Cost |
+|---|---|---|
+| Budgeted PPO from scratch, VOC ladder compressed to 300 its | 4096 envs: 0/4096 at it 350; 1024 envs: 0/1024 at it 400 — always drops the box at 40%, same as no policy | 6.0 s/it at 4096 envs (16.4k env-steps/s), boot 2.5 min; ~$2.65/h per L40S sandbox |
+| Open-loop grip search (one batched rollout, 256 squeeze/lead settings) | 0/256 on the good clip; squeezing pushes the wrists off the path (best 41%) | 1 min |
+| Bundled expert zero-shot on other clips | Real fast-pipeline clips b3_tb2, b3_tbseed: fail at once (wrist, step 52). Defects of its own clip: float4, sink2, lag25 pass; shift5 fails (17%) | 1 min per clip |
+
+Findings:
+- No cheap per-clip proof exists yet: the hard part (holding the box through the lift
+  without the assist) takes the recipe ~20k iterations, and a tissue-box expert does not
+  transfer to a new demonstration of the same task.
+- Physics QA and solvability measure different things: 3 of the 4 QA-flagged defects are
+  solvable by a trained policy. QA flags reconstruction errors, not unsolvable clips.
+
+Open directions (not started): (a) warm-start the per-clip PPO from an existing expert
+(test on the 2 real clips, ~$3–5); (b) one general tracking policy trained across many clips,
+then a ~2 min check per clip (needs multi-clip manipulation training and many more reviewed
+clips; ~$50–150 one-time); (c) full recipe on a 1-in-N audit sample, physics QA as the
+per-clip gate. Spend on this stage: ~$5 (julian-41138, sales-32662).
+
 ## Next: todo for the remaining stages (for review)
 
 Same method as reconstruct: profile → isolate each call → smoke levers in parallel against
@@ -339,14 +367,12 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
       margin is thin); per-clip hand-off from reconstruction to
       the robot phase; floating-hand QA/overlay; RTX profile only if demos need it.
 
-**3. Solvability check (new)**
-- [ ] Define "solvable" with the labs' acceptance in mind: object follows the retargeted
-      motion in physics (tracking error, no penetration/slip, success by the task's own
-      evaluator `lift_hold`).
-- [ ] Cheapest candidate first: kinematic replay + physics settle, then a short
-      tracking-policy rollout; calibrate both against the 13.4 h expert on known
-      good/bad clips.
-- [ ] Batch it: many environments per Isaac process (`--num_envs`), one GPU.
+**3. Solvability check (new)** — paused 2026-11-20, see "Solvability check" below
+- [x] Define "solvable": from frame 0, assist (VOC) off, the recipe's terminations, the policy
+      completes the whole reference; plus the task evaluator (`lift_hold`) on the object.
+- [x] Built: `scripts/rsl_rl/solvability.py`, `run_e2e.sh solvability` (experimental, not in
+      the batch defaults; skips QA-flagged clips before Isaac starts).
+- [ ] A cheap proof: not found. Open directions below.
 
 **4. Retarget (3.0 min)**
 - [ ] Profile prepare / load / Vega / Sharpa sub-steps; most of it is probably Isaac/Kit

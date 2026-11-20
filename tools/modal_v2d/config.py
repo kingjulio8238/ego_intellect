@@ -208,7 +208,7 @@ RATES = {
 #   rg:      GPU container built from robotic_grounding/workflow/Dockerfile + Isaac-GR00T;
 #            the `robotic-grounding` image runs locally, the loader image remotely.
 CONTROL_COMMANDS = {"init", "use", "status", "setup", "reconstruct", "import-reconstruction", "inspect"}
-RG_COMMANDS = {"doctor", "retarget", "simulate", "render", "train-expert", "collect", "finetune", "evaluate"}
+RG_COMMANDS = {"doctor", "retarget", "simulate", "solvability", "render", "train-expert", "collect", "finetune", "evaluate"}
 GLOBAL_FLAGS_WITH_VALUE = {"--config"}
 
 

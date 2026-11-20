@@ -51,6 +51,7 @@ from tools.e2e.stages import (
     setup_stages,
     render_stages,
     simulate_stages,
+    solvability_stages,
     train_expert_stages,
 )
 
@@ -1009,6 +1010,7 @@ class StageTests(Fixture):
             "simulate": simulate_stages(config, "both"),
             "render": render_stages(config, "both", backend="rtx"),
             "render-overlay": render_stages(config, "vega"),
+            "solvability": solvability_stages(config, "vega"),
             "train-expert": train_expert_stages(
                 config, "both", max_iterations=1, num_envs=1
             ),
@@ -1089,6 +1091,35 @@ class StageTests(Fixture):
         self.assertEqual(
             stage.outputs, (config.run_root / "simulate" / "vega" / "replay_metrics.json",)
         )
+
+    def test_solvability_trains_a_budgeted_policy_and_evaluates_it(self) -> None:
+        config = self.make_ready_config()
+        stage = solvability_stages(config, "vega", max_iterations=300, num_envs=512)[0]
+        command = stage.commands[0].argv
+        self.assertIn("scripts/rsl_rl/solvability.py", command)
+        self.assertNotIn("--enable_cameras", command)
+        self.assertEqual(command[command.index("--max_iterations") + 1], "300")
+        self.assertEqual(command[command.index("--num_envs") + 1], "512")
+        self.assertTrue(
+            command[command.index("--task_profile") + 1].endswith("/contracts/task_profile.json")
+        )
+        self.assertEqual(
+            stage.outputs, (config.run_root / "solvability" / "vega" / "solvability.json",)
+        )
+        with self.assertRaises(ConfigError):
+            solvability_stages(config, "floating")
+
+    def test_solvability_cli_persists_its_parameters(self) -> None:
+        config = self.make_ready_config("solvability-cli")
+        with mock.patch.object(cli.Runner, "run_many", return_value=[]) as run_many:
+            result = cli.main(
+                ["solvability", "--max-iterations", "200", "--config", str(config.path)]
+            )
+        self.assertEqual(result, 0)
+        stages = run_many.call_args.args[0]
+        self.assertEqual([stage.name for stage in stages], ["solvability.vega"])
+        command = stages[0].commands[0].argv
+        self.assertEqual(command[command.index("--max_iterations") + 1], "200")
 
     def test_open_loop_uses_standard_joint_evaluator(self) -> None:
         config = self.make_ready_config()

@@ -631,6 +631,86 @@ def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
     return stages
 
 
+# Solvability budget (scripts/rsl_rl/solvability.py); calibration in
+# docs/pipeline/OPTIMIZATION.md ("Solvability check").
+SOLVABILITY_NUM_ENVS = 4096
+SOLVABILITY_MAX_ITERATIONS = 1500
+SOLVABILITY_VOC_ANNEAL_ITERATIONS = 500
+SOLVABILITY_EVAL_INTERVAL = 100
+
+
+def solvability_stages(
+    config: E2EConfig,
+    embodiment: str,
+    *,
+    max_iterations: int = SOLVABILITY_MAX_ITERATIONS,
+    num_envs: int = SOLVABILITY_NUM_ENVS,
+    voc_anneal_iterations: int = SOLVABILITY_VOC_ANNEAL_ITERATIONS,
+    eval_interval: int = SOLVABILITY_EVAL_INTERVAL,
+) -> list[Stage]:
+    """Budgeted PPO on the clip's own expert task + frame-0 evaluation (Vega only).
+
+    EXPERIMENTAL (paused 2026-11-20): the evaluation is validated against the bundled expert,
+    but this budget does not yet solve a known-good clip; not in the batch's default robot
+    steps. See docs/pipeline/OPTIMIZATION.md ("Solvability check").
+
+    Writes RUN_ROOT/solvability/vega/solvability.json with `solvable`, the iteration it was
+    solved at, and the evaluation history; the passing policy is saved next to it
+    (policy.pt). NOT SOLVED within the budget is data, not a stage failure. Needs
+    `simulate`: a clip its physics QA flagged is skipped before Isaac starts.
+    """
+    stages: list[Stage] = []
+    for name in _embodiments(embodiment):
+        if name == "floating":
+            raise ConfigError(
+                "solvability is calibrated for the Vega whole-body task only; "
+                "use --embodiment vega"
+            )
+        task, motion = _simulate_task(config, name)
+        output_container = config.container_path("run_root") / "solvability" / name
+        argv = (
+            "scripts/rsl_rl/solvability.py",
+            "--headless",
+            "--task",
+            task,
+            "--motion_file",
+            motion,
+            "--task_profile",
+            config.container_path("task_profile"),
+            "--num_envs",
+            str(num_envs),
+            "--max_iterations",
+            str(max_iterations),
+            "--voc_anneal_iterations",
+            str(voc_anneal_iterations),
+            "--eval_interval",
+            str(eval_interval),
+            "--qa_report",
+            config.container_path("run_root") / "simulate" / name / "replay_metrics.json",
+            "--output",
+            output_container / "solvability.json",
+        )
+        command = _container_command(
+            config,
+            (*_container_env(config), "python", *argv),
+            label=f"check the {name} environment is solvable",
+        )
+        stages.append(
+            Stage(
+                f"solvability.{name}",
+                (command,),
+                inputs=(
+                    _motion_partition_host(config, motion.name.split("=", 1)[1]),
+                    config.run_root / "simulate" / name / "replay_metrics.json",
+                ),
+                outputs=(config.run_root / "solvability" / name / "solvability.json",),
+                description=f"train a budgeted policy on the {name} environment and "
+                "evaluate it from frame 0",
+            )
+        )
+    return stages
+
+
 RENDER_VIDEO_LENGTH = 200  # environment steps recorded (one frame each)
 
 

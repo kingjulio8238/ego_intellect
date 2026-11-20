@@ -33,7 +33,7 @@ from tools.modal_v2d.progress import hms
 
 REPO = Path(__file__).resolve().parents[2]
 PIPELINE_ORDER = ["init", "use", "status", "setup", "doctor", "reconstruct", "import-reconstruction", "inspect",
-                  "retarget", "simulate", "render", "train-expert", "collect", "finetune", "evaluate"]
+                  "retarget", "simulate", "solvability", "render", "train-expert", "collect", "finetune", "evaluate"]
 V2D_APPS = {C.APP_NAME, "v2d-e2e-build"}
 TAGS = ["v2d_invocation", "v2d_command", "v2d_role"]
 

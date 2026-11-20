@@ -28,6 +28,8 @@ from .runner import (
 )
 from .stages import (
     RENDER_VIDEO_LENGTH,
+    SOLVABILITY_MAX_ITERATIONS,
+    SOLVABILITY_NUM_ENVS,
     collect_stages,
     doctor_stages,
     evaluate_stages,
@@ -41,6 +43,7 @@ from .stages import (
     retarget_stages,
     setup_stages,
     simulate_stages,
+    solvability_stages,
     train_expert_stages,
 )
 
@@ -220,6 +223,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="overlay (default): pyrender of simulate's physics replay, runs anywhere; "
         "rtx: Isaac RTX cameras, needs an RTX host with a supported driver",
     )
+
+    solvability = subparsers.add_parser(
+        "solvability",
+        help="experimental: budgeted RL on the environment + frame-0 evaluation (Vega)",
+    )
+    solvability.add_argument("--embodiment", choices=("vega",))
+    solvability.add_argument("--max-iterations", type=_positive_int)
+    solvability.add_argument("--num-envs", type=_positive_int)
 
     train = subparsers.add_parser("train-expert", help="train source RL experts")
     train.add_argument("--embodiment", choices=("floating", "vega", "both"))
@@ -761,6 +772,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             _runner(args, config).run_many(
                 render_stages(
                     config, embodiment, video_length=video_length, backend=backend
+                )
+            )
+        elif args.command == "solvability":
+            embodiment = _stage_value(args, config, "solvability", "embodiment", default="vega")
+            max_iterations = int(
+                _stage_value(
+                    args, config, "solvability", "max_iterations",
+                    default=SOLVABILITY_MAX_ITERATIONS,
+                )
+            )
+            num_envs = int(
+                _stage_value(
+                    args, config, "solvability", "num_envs", default=SOLVABILITY_NUM_ENVS
+                )
+            )
+            config = _configure(
+                args,
+                config,
+                "solvability",
+                {"embodiment": embodiment, "max_iterations": max_iterations, "num_envs": num_envs},
+            )
+            _runner(args, config).run_many(
+                solvability_stages(
+                    config, embodiment, max_iterations=max_iterations, num_envs=num_envs
                 )
             )
         elif args.command == "train-expert":

@@ -37,7 +37,9 @@ containers counting against the cap; costs a ~6-17 s cold start per call);
 `robot_steps` (default ["retarget", "simulate"]; [] = reconstruct only): run per clip in one
 robotic-grounding GPU container once the reconstruction phase has finished (the clips' run-root
 locks are held by the reconstruction container until then). `simulate` writes each clip's
-physics-QA flag. `render_every` (default 20; 0: none): the optional environment video goes to
+physics-QA flag. "solvability" after "simulate" adds the experimental budgeted-RL check
+(skips clips the physics QA flagged; verdicts land in the pipeline summary; its budget does
+not yet solve known-good clips, see docs/pipeline/OPTIMIZATION.md). `render_every` (default 20; 0: none): the optional environment video goes to
 every flagged clip plus a stable 1-in-N sample (`render_queue`); the queue is drained last,
 one clip at a time, after every clip's robot steps (never on a clip's critical path).
 
@@ -127,6 +129,12 @@ def robot_steps(name: str, manifest: dict) -> list[list[str]]:
 def qa_report_path(name: str, embodiment: str = "vega") -> str:
     """Where `simulate` writes the clip's physics-QA metrics (tools/e2e/stages.py)."""
     return f"{RUNS}/{name}/simulate/{embodiment}/replay_metrics.json"
+
+
+def solvability_report_path(name: str, embodiment: str = "vega") -> str:
+    """Where `solvability` writes the clip's verdict (tools/e2e/stages.py); only present when
+    the manifest's `robot_steps` include "solvability"."""
+    return f"{RUNS}/{name}/solvability/{embodiment}/solvability.json"
 
 
 def render_commands(names: list[str]) -> list[list[str]]:

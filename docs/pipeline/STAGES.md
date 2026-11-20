@@ -19,7 +19,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 6 | Retarget (robot-agnostic human-hand motion + robot retargets) | `retarget` | Not optimized | 3.0 min |
 | 7 | Environment build + physics QA replay (assets, collision, support surfaces; numeric flags) | `simulate` | Not optimized; QA added in the same boot | 2.0 min |
 | 8 | Render overlay (visual check) | `render` (overlay of the physics replay; flagged + 1 in 20, after delivery) | **Optimized** | 0 on the path (was 5.3 min); 20 s per rendered clip |
-| 9 | Solvability check (replaces 13.4 h RL as our QA) | — | **To add** | — |
+| 9 | Solvability check (replaces 13.4 h RL as our QA) | `solvability` (experimental) | **Paused**: test validated, no cheap proof yet ([OPTIMIZATION.md](OPTIMIZATION.md)) | — |
 | 10 | Task / reward spec | — | **To add** | — |
 | 11 | Export / package (Isaac Lab / USD; possibly MuJoCo) | — | **To add** | — |
 | 12 | Delivery to lab | — | **To add** | — |

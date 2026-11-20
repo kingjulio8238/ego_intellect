@@ -615,6 +615,15 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
             qa[result["name"]] = {"flag": bool(report.get("flag")), "reasons": report.get("flag_reasons", [])}
         except (OSError, ValueError) as exc:
             qa[result["name"]] = {"flag": None, "reasons": [f"no QA report: {exc}"]}
+    solvability: dict[str, dict] = {}
+    for result in robot_results:
+        path = Path(sync.mirror_path(C.MIRROR_ROOT, B.solvability_report_path(result["name"])))
+        if result["code"] == 0 and path.is_file():
+            try:
+                report = json.loads(path.read_text())
+                solvability[result["name"]] = {"solvable": report.get("solvable"), "verdict": report.get("verdict")}
+            except (OSError, ValueError) as exc:
+                solvability[result["name"]] = {"solvable": None, "verdict": f"unreadable: {exc}"}
     flagged = [name for name, item in qa.items() if item["flag"]]
     simulated = [r["name"] for r in robot_results if r["code"] == 0]
     queue = B.render_queue(simulated, render_every, flagged)
@@ -644,6 +653,7 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
         "delivered": delivered,
         "qa": qa,
         "flagged": flagged,
+        "solvability": solvability,
         "render_every": render_every,
         "render_queue": queue,
         "renders": renders,
