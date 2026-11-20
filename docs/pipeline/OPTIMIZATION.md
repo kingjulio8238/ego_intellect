@@ -9,7 +9,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 | Rank | Stage | Why here | Status |
 |---|---|---|---|
 | 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (rounds 1–2)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip; sharding across workspaces, preemption-safe |
-| 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | Todo |
+| 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **In progress**: phases A–C done (off the critical path; optional, sampled `render`; numeric QA in `simulate`) — see below |
 | 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | Todo |
 | 4 | Retarget (3.0 min) | Next-largest existing stage | Todo |
 | 5 | Environment build (2.0 min) | | Todo |
@@ -158,6 +158,100 @@ arch-portable modules, hedging to H100 (F2; needs a numerics gate per module), s
 non-model images in throughput mode, keep-warm models (F9), and more workspaces in parallel
 (each adds its own cap and credit).
 
+## Render overlay (stage 8), 2026-11-20
+
+Decisions (A2/A3): the video is **internal QA**; numbers gate clips (phase C), a video goes to
+**flagged clips plus 1 in 20**. RTX video stays for demos; phase E (per-clip RTX) is not planned.
+
+**Phase A, profile.** The 5.3 min "environment on video" was `train-expert` borrowed for
+10 iterations × 24 steps with RTX cameras on a Vast A6000 (Isaac Lab 2.3.2 cameras crash on
+Modal's driver). The same environment without cameras, on Modal L40S (tissue_box, Vega,
+1 env, 200 steps):
+
+| Phase | Cold container | Warm (2nd run, same container) |
+|---|---|---|
+| Kit boot (no cameras) | 20 s | 10.5 s |
+| Scene creation | 15.2 s | 5.9 s |
+| Simulation start + managers | 4.5 s | 3.0 s |
+| 200 physics steps + close | 16 s | 15 s |
+| **Total** | **58 s** | **35 s** |
+
+So ≥ 4.3 of the 5.3 min is cameras/RTX (shader start-up, per-frame render, encode) plus the
+10 training iterations. The RTX split is not measured: it needs an RTX host outside Modal, and
+was deferred because only demos need RTX now (script ready: a cold/warm 200-frame render and
+the exact old command, self-stopping, 45 min cap).
+
+**Phase B, off the critical path.**
+- `run_e2e.sh render [--embodiment] [--video-length 200]`: a separate, optional stage. Zero-action
+  replay with the reference markers on (`dummy_agent.py --record_video --debug_vis`), one MP4
+  per embodiment in `RUN_ROOT/render/<embodiment>/`, success marker `render.done`. No
+  training iterations.
+- `train-expert` no longer records video: training is camera-free by default (it used to add an
+  8-step video on the 1-iteration default, which needs RTX cameras).
+- Batches record a render queue at launch (`.e2e/batch/<id>/render_queue.json` and the progress
+  store): flagged clips plus a stable 1-in-`render_every` sample (hash of the clip name;
+  manifest `render_every`, default 20, 0 = none). It is drained after delivery, never inline.
+- `train.py --video`: an interval shorter than the length is raised to the length (interval 1 /
+  length 200 had written 240 one-frame clips).
+- On Modal, `render` refuses up front with the reason (RTX cameras crash on its driver) rather
+  than crashing inside Isaac; `V2D_MODAL_ALLOW_RTX=1` is for testing a fix.
+
+**Phase C, numbers instead of looking.** `simulate` (Vega) now builds the environment and
+replays the whole clip in physics without cameras (`robotic_grounding/scripts/rsl_rl/replay_metrics.py`):
+frame-0 reset, zero residual actions (the robot PD-tracks the retargeted reference), object
+assist (VOC) and curriculum off. It writes `RUN_ROOT/simulate/vega/replay_metrics.json` with
+the checks below and a `flag`; one Isaac boot does build and QA (35–60 s on L40S, replay
+13–19 s). The open-loop replay cannot hold the object through a whole clip even when the clip
+is good (tissue_box drops it at 40 %: the trained policy supplies the corrections), so the
+checks use the phases it does judge, plus one kinematic check that needs no simulator
+(`scripts/data_quality_checks/grasp_drift.py`, also a `data_assessor.py` check).
+
+| Check (limit) | What it catches | good | good, 2nd run | +4 cm (floats) | −2 cm (sinks) | +5 cm x (overlaps hands) | object 0.5 s late |
+|---|---|---|---|---|---|---|---|
+| Object error, first 0.5 s, max (1.5 cm) | floats, sinks, bad placement | 0.64 cm | 0.64 cm | **3.7** | **4.3** | **7.1** | 0.68 |
+| Object error before first contact, p95 (3.5 cm) | drift at rest | 2.4 | 2.4 | **5.5** | **4.1** | **6.8** | 2.6 |
+| Object error, first 1 s of contact, p95 (4.5 cm) | object does not follow the grasp | 3.1 | 3.1 | **6.1** | — | — | 2.5 |
+| Missed contact, first 1 s of contact, mean (0.5) | hands miss the object | 0 | 0 | 0 | — | — | 0 |
+| Wrist error, p95 (5 cm) | robot cannot follow its reference | 3.3 | 3.4 | 3.2 | 3.4 | 3.9 | 3.9 |
+| Wrist drift in the object frame during contact, p95 (3.5 cm) | hands and object out of sync | 2.3 | 2.3 | 2.4 | 2.2 | 2.4 | **4.9** |
+| Replay ends before the first contact | blow-ups | no | no | no | **yes (5 steps)** | **yes (4 steps)** | no |
+| **Flag** | | no | no | **yes** | **yes** | **yes** | **yes** |
+
+6/6 classified correctly; two runs of the good clip agree to 0.2 mm. Caveats: one reviewed
+clip is a thin baseline (re-calibrate as reviewed clips accumulate); the defects are
+synthetic; missed-contact and wrist checks were not triggered by any defect here; the
+floating-hand embodiment keeps the 2-step smoke (checks calibrated for Vega only).
+
+Found on the way: any edit under `robotic_grounding/` (even a `__pycache__`) rebuilds the
+whole rg image on Modal (~18 min), because it is built from the directory as one Docker
+context. Splitting it like the module images (cached layers before the source COPY) is a
+setup item.
+
+Open: draining the queue needs a renderer that runs where batches run. Phase D (pyrender
+overlay, Modal-capable) provides it; until then the queue runs with `./run_e2e.sh render` on an
+RTX host. Flags come from phase C.
+
+## Chip choice: L40S vs RTX PRO 6000 Blackwell (2026-11-20)
+
+**Decision: standardize on L40S.** RTX PRO 6000 does not meet the pre-agreed bar (≥1.3× faster
+or ≥20 % cheaper per clip, and Isaac Sim working); revisit when the two blockers below clear.
+
+| Check | Result |
+|---|---|
+| Images | All 12 module images port to Blackwell (`V2D_MODAL_ARCH=blackwell`: PyTorch 2.7.1 + CUDA 12.8, CUDA code for sm 12.0, TensorRT 10.9). Fixes needed: CMake 4 policy, two CUDA ops using a dispatch form PyTorch 2.7 removed (GroundingDINO, FoundationPose), WiLoR-mini pinning torch ≤ 2.5, PyTorch ≥ 2.6 `weights_only` checkpoint loading. Every compiled extension loads and runs on sm 12.0 (spconv, gsplat, pytorch3d, nvdiffrast, kaolin, lietorch, torch-scatter, TensorRT) |
+| Reconstruct, 2 seeded tissue_box clips | 2/2 ok |
+| Repeatable on itself | **PASS**: Blackwell vs Blackwell hand rot 0.17°, fingers 0.40°, betas 0.053 (L40S vs L40S: 0.26°, 0.52°, 0.071) |
+| Close to L40S | Blackwell vs L40S: hand rot 1.57°, fingers 2.76° (strict tol 0.35° / 0.70°: fail); within stock's own cross-machine spread (encoder thread count: 3.42° / 4.33°); camera, object, hand translation, betas pass |
+| Speed (GPU exec per clip) | 617 s L40S → 567–579 s first runs (one-time TensorRT engine and gsplat compile), **~485 s steady (1.27×)**. Per module: MoGe 1.6×, SAM2 1.5–1.7×, DROID 1.75×, gsplat 1.0–1.4×, HaMeR 1.2×, SAM3D 0.7–1.1×, FoundationPose 0.6–1.1×, WiLoR 1.0× |
+| Cost per clip (GPU time × list price) | Modal $3.03 vs $1.95/h: Blackwell **~22 % more** per clip; market medians ($2.23 vs $1.58): ~11 % more; purchase (~$15–20k vs ~$9k): more again unless packed |
+| Isaac Sim (simulate stage) | **FAIL on Modal**: Isaac Sim 5.1 (our Isaac Lab 2.3.2 image, and vanilla 5.1.0) segfaults in the RTX renderer on Blackwell with Modal's driver 610/620; NVIDIA lists driver 580.x for 5.1. Vanilla Isaac Sim 6.0.0 boots headless on the same GPU |
+| Headroom for packing | Blackwell 96 GB, per-call peak ≤ 23 GiB, GPU util 8–67 %: 3–4 calls could share one GPU. Not measured: the executor runs one call per container |
+| Availability on Modal | RTX-PRO-6000 started in 1–37 s throughout (L40S waited minutes at times) |
+
+**Revisit Blackwell when** (a) the robot stack moves to Isaac Sim ≥ 6.0, or dedicated machines
+run driver 580.x for Isaac Sim 5.1; and (b) the executor packs several calls per GPU — the 96 GB
+is Blackwell's real advantage for this pipeline, not per-call speed.
+
 ## Next: todo for the remaining stages (for review)
 
 Same method as reconstruct: profile → isolate each call → smoke levers in parallel against
@@ -175,14 +269,16 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
 - [ ] Open, only if the bar is relaxed to stock's own cross-machine spread: measure that
       spread (stock on hosts with different core counts / GPU types), then re-gate the fallback.
 
-**2. Render overlay (5.3 min, `simulate` render part)**
-- [ ] Profile the render: Isaac Kit boot vs per-frame RTX render vs encode; GPU util.
-- [ ] Decide what the render is for. It is a visual check that no downstream stage reads, so
-      take it off the critical path: optional flag, async after delivery, or a sampled
-      check on 1 clip in N.
-- [ ] If kept: lower resolution/fps, fewer frames, rasterized (non-RTX) mode, reuse the
-      Kit process of the build step (one boot instead of two).
-- [ ] Gate: build artifacts byte-identical; render (if kept) visually equivalent.
+**2. Render overlay (5.3 min)** — plan approved 2026-11-20; record above
+- [x] A. Profile (camera-free part on L40S; RTX split deferred) and decide: internal QA,
+      flagged + 1 in 20.
+- [x] B. Separate optional `render` stage; sampled render queue per batch; recorder fix.
+- [x] C. Numeric checks from a camera-free physics replay in `simulate` (one boot), plus
+      the kinematic grasp-drift check; calibrated on tissue_box and 4 synthetic defects.
+      Building block for the solvability check (rank 3).
+- [ ] D. pyrender overlay renderer (`render_verification_video`), Modal-capable; compare
+      with the RTX clip on one clip; default video if it shows the same defects.
+- [ ] F. Batch check and write-up. (E, per-clip RTX, not planned: internal QA only.)
 
 **3. Solvability check (new)**
 - [ ] Define "solvable" with the labs' acceptance in mind: object follows the retargeted

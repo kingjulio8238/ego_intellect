@@ -69,6 +69,15 @@ case "$subcommand" in
   setup) default_h=3 ;;
   reconstruct) default_h=4 ;;
   doctor|simulate) default_h=1 ;;
+  render)
+    # Isaac Sim 5.1 RTX cameras crash under Modal's NVIDIA driver (610/620; NVIDIA lists 580.x):
+    # see docs/pipeline/OPTIMIZATION.md. V2D_MODAL_ALLOW_RTX=1 is for testing a fix only.
+    if [[ "${V2D_MODAL_ALLOW_RTX:-0}" != "1" ]]; then
+      echo "render needs Isaac RTX cameras, which crash on Modal's driver; run it with ./run_e2e.sh" \
+        "on an RTX host with driver 580.x (or set V2D_MODAL_ALLOW_RTX=1 to test a fix)" >&2
+      exit 2
+    fi
+    default_h=1 ;;
   retarget) default_h=2 ;;
   train-expert) default_h=24 ;;
   collect|finetune) default_h=12 ;;

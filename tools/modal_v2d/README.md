@@ -230,6 +230,7 @@ A failed billing query is reported as UNKNOWN, never as $0.
 | `V2D_MODAL_DOWNLOADS_ON_GPU` | unset | `1` sends weight downloads to the GPU functions, as docker would |
 | `V2D_GROOT_REF` | `23ace64` (n1.7-release) | Isaac-GR00T commit baked into the rg image |
 | `V2D_MODAL_SECRETS` | `v2d-hf` | Comma-separated secret names attached to every function |
+| `V2D_MODAL_ARCH` | `ada` | `blackwell` builds the RTX PRO 6000 image variant (PyTorch 2.7.1 + CUDA 12.8, sm 12.0); pair with `V2D_MODAL_MODULE_GPU=RTX-PRO-6000`. Reconstruct only: Isaac Sim 5.1 crashes on Blackwell with Modal's driver |
 | `V2D_MODAL_HEDGE_GPU` | `L40S` | GPU type(s) of the hedge twins; other types change outputs beyond the strict bar (docs/pipeline/OPTIMIZATION.md) |
 | `V2D_MODAL_MODULE_GPU` / `V2D_MODAL_GPU_PER_IMAGE` | `L40S` / `{}` | A comma list is a Modal fallback list (first type with capacity, ~3 s); per-image JSON overrides. Off by default for the same reason |
 | `V2D_MODAL_HEDGE_AFTER_S` | 30 | Seconds before a call is hedged; 0 disables |

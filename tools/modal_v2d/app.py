@@ -740,6 +740,14 @@ def batch(manifest: str, max_parallel: int = 4) -> None:
         for step in clip["steps"]:
             print(f"  {clip['name']}: run_e2e.sh {' '.join(step)}")
     _tag({"v2d_invocation": batch_id, "v2d_command": "batch", "v2d_role": "batch"})
+    queue = B.render_queue([clip["name"] for clip in clips], int(spec.get("render_every", B.RENDER_EVERY)))
+    queue_record = {"batch_id": batch_id, "render_every": int(spec.get("render_every", B.RENDER_EVERY)),
+                    "clips": queue, "commands": B.render_commands(queue)}
+    queue_path = Path(__file__).resolve().parents[2] / ".e2e" / "batch" / batch_id / "render_queue.json"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(json.dumps(queue_record, indent=1))
+    progress_store.put(f"batch:{batch_id}:render_queue", queue_record)
+    print(f"[v2d-batch] render queue (optional video, after delivery): {queue or 'none'} -> {queue_path}")
     options = {"scaledown_s": C.MODULE_SCALEDOWN_S, "scaledown_per_image": C.SCALEDOWN_PER_IMAGE,
                **(spec.get("options") or {})}
     mode = spec.get("mode", "shared")
@@ -831,3 +839,69 @@ def cap_probe(n: int = 10, hold_s: float = 20, gap_s: float = 5, reuse: bool = F
     images = [i for i in C.MODULE_IMAGES if i != "v2d_task_library_loader"][:n]
     for row in cap_probe_driver.remote(images, hold_s, gap_s, reuse):
         print(json.dumps(row), flush=True)
+
+
+GPU_SMOKE_COMMON = (
+    "import torch; assert torch.cuda.is_available(); "
+    "print('torch', torch.__version__, 'cuda', torch.version.cuda, 'sm', torch.cuda.get_device_capability(), torch.cuda.get_device_name()); "
+    "x = torch.randn(256, 256, device='cuda'); assert torch.isfinite((x @ x).sum()); "
+    "import torch.nn.functional as F; F.conv2d(torch.randn(1, 3, 32, 32, device='cuda'), torch.randn(4, 3, 3, 3, device='cuda')); "
+)
+# One line per image: load every compiled CUDA extension the image's code paths use and run
+# a tiny kernel where that is cheap. A Blackwell port fails here, per image, in seconds.
+GPU_SMOKE = {
+    "v2d_sam3d": "import gsplat; from gsplat.cuda._backend import _C; assert _C is not None; "
+                 "import spconv.pytorch as spconv; "
+                 "f = torch.randn(8, 4, device='cuda'); i = torch.randint(0, 8, (8, 4), device='cuda', dtype=torch.int32); i[:, 0] = 0; "
+                 "t = spconv.SparseConvTensor(f, i, [8, 8, 8], 1); spconv.SubMConv3d(4, 4, 3).cuda()(t); "
+                 "from pytorch3d import _C as p3d; import nvdiffrast.torch as dr; dr.RasterizeCudaContext(); import kaolin",
+    "v2d_foundation_pose": "from pytorch3d import _C as p3d; import nvdiffrast.torch as dr; dr.RasterizeCudaContext(); import kaolin; "
+                           "import tensorrt as trt; print('tensorrt', trt.__version__); import warp as wp; wp.init()",
+    "v2d_droid_slam": "import torch_scatter, lietorch, droid_backends; print(lietorch.SE3.Identity(1, device='cuda'))",
+    "v2d_gsplat_refinement": "import gsplat; from gsplat.rendering import rasterization; "
+                             "m = torch.zeros(1, 3, device='cuda'); q = torch.tensor([[1., 0, 0, 0]], device='cuda'); "
+                             "s = torch.full((1, 3), .1, device='cuda'); o = torch.ones(1, device='cuda'); c = torch.ones(1, 3, device='cuda'); "
+                             "v = torch.eye(4, device='cuda')[None]; v[0, 2, 3] = 2; K = torch.tensor([[[50., 0, 32], [0, 50, 32], [0, 0, 1]]], device='cuda'); "
+                             "img, _, _ = rasterization(m, q, s, o, c, v, K, 64, 64); print('gsplat render', tuple(img.shape))",
+    "v2d_grounding_dino": "import groundingdino; from groundingdino import _C; print('groundingdino _C ok')",
+    "v2d_sam2": "import sam2; print('sam2 ok')",
+    "v2d_hamer": "import hamer; print('hamer ok')",
+    "v2d_wilor": "import wilor_mini; print('wilor ok')",
+    "v2d_moge": "import moge; print('moge ok')",
+    "v2d_anycalib": "import anycalib; print('anycalib ok')",
+    "v2d_geocalib": "import geocalib; print('geocalib ok')",
+    "v2d_task_library_loader": "from pytorch3d import _C as p3d; print('pytorch3d ok')",
+}
+
+
+@app.function(image=IMAGES["control"], timeout=3600, retries=0, cpu=1, memory=1024)
+def gpu_smoke_driver(images: list[str]) -> list[dict]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(image: str) -> dict:
+        spec = {"image": image, "argv": ["python", "-c", GPU_SMOKE_COMMON + GPU_SMOKE[image]], "env": {},
+                "workdir": None, "mounts": [], "call_id": f"gpusmoke-{uuid.uuid4().hex[:6]}", "exit_after": True}
+        try:
+            result = IMAGE_FUNCTIONS[image].remote(spec)
+            log = ""
+            try:
+                with open(result["log"], encoding="utf-8", errors="replace") as stream:
+                    log = stream.read()[-1500:]
+            except OSError:
+                pass
+            return {"image": image, "returncode": result["returncode"], "tail": log}
+        except Exception as exc:  # noqa: BLE001
+            return {"image": image, "returncode": -1, "tail": f"{type(exc).__name__}: {exc}"[:1500]}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:  # stay well below the workspace GPU cap
+        return list(pool.map(one, images))
+
+
+@app.local_entrypoint()
+def gpu_smoke(images: str = "") -> None:
+    """Per image: load its compiled CUDA extensions on the module GPU (`--images a,b`)."""
+    names = [n for n in images.split(",") if n] or list(GPU_SMOKE)
+    for row in gpu_smoke_driver.remote(names):
+        print(json.dumps({"image": row["image"], "returncode": row["returncode"]}), flush=True)
+        if row["returncode"] != 0:
+            print(row["tail"], flush=True)

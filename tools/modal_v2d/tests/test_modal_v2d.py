@@ -470,7 +470,7 @@ class ConfigTests(unittest.TestCase):
             config.role_for(["bogus"])
         e2e_commands = {
             "init", "use", "setup", "doctor", "reconstruct", "import-reconstruction", "inspect",
-            "retarget", "simulate", "train-expert", "collect", "finetune", "evaluate", "status",
+            "retarget", "simulate", "render", "train-expert", "collect", "finetune", "evaluate", "status",
         }
         self.assertEqual(config.CONTROL_COMMANDS | config.RG_COMMANDS, e2e_commands)
 

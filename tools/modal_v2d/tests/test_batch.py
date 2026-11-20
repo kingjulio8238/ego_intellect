@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import unittest
 import time
 
 import pytest
@@ -392,3 +393,21 @@ def test_cancelled_call_kills_its_command(tmp_path):
     time.sleep(0.5)
     after = marker.stat().st_mtime if marker.exists() else 0
     assert before == after  # nothing is writing any more
+
+
+class RenderQueueTests(unittest.TestCase):
+    def test_sample_is_stable_and_about_one_in_n(self):
+        names = [f"clip_{i:04d}" for i in range(2000)]
+        chosen = B.render_queue(names, every=20)
+        self.assertEqual(chosen, B.render_queue(list(reversed(names)), every=20)[::-1])
+        self.assertTrue(70 <= len(chosen) <= 130, len(chosen))  # ~100 expected
+        self.assertEqual(B.render_queue(names[:500], every=20), [n for n in chosen if n in names[:500]])
+
+    def test_flagged_always_rendered_and_zero_disables_sampling(self):
+        names = ["a", "b", "c"]
+        self.assertEqual(B.render_queue(names, every=0, flagged=["c"]), ["c"])
+        self.assertEqual(B.render_queue(names, every=0), [])
+        self.assertEqual(B.render_queue(names, every=1), names)
+
+    def test_render_commands_target_each_run_root(self):
+        self.assertEqual(B.render_commands(["x"]), [["--config", "/e2e/runs/x/e2e_config.json", "render"]])

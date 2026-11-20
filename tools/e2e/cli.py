@@ -27,6 +27,7 @@ from .runner import (
     reconcile_interrupted_stages,
 )
 from .stages import (
+    RENDER_VIDEO_LENGTH,
     collect_stages,
     doctor_stages,
     evaluate_stages,
@@ -36,6 +37,7 @@ from .stages import (
     pilot_collection_stage,
     read_pilot_measurement,
     reconstruct_stages,
+    render_stages,
     retarget_stages,
     setup_stages,
     simulate_stages,
@@ -205,6 +207,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     simulate = subparsers.add_parser("simulate", help="run Isaac Lab task smoke checks")
     simulate.add_argument("--embodiment", choices=("floating", "vega", "both"))
+
+    render = subparsers.add_parser(
+        "render",
+        help="optional visual check: record the environment on video (Isaac RTX cameras)",
+    )
+    render.add_argument("--embodiment", choices=("floating", "vega", "both"))
+    render.add_argument("--video-length", type=_positive_int)
 
     train = subparsers.add_parser("train-expert", help="train source RL experts")
     train.add_argument("--embodiment", choices=("floating", "vega", "both"))
@@ -729,6 +738,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"embodiment": embodiment},
             )
             _runner(args, config).run_many(simulate_stages(config, embodiment))
+        elif args.command == "render":
+            embodiment = _stage_value(args, config, "render", "embodiment", default="vega")
+            video_length = int(
+                _stage_value(
+                    args, config, "render", "video_length", default=RENDER_VIDEO_LENGTH
+                )
+            )
+            config = _configure(
+                args,
+                config,
+                "render",
+                {"embodiment": embodiment, "video_length": video_length},
+            )
+            _runner(args, config).run_many(
+                render_stages(config, embodiment, video_length=video_length)
+            )
         elif args.command == "train-expert":
             embodiment = _stage_value(
                 args, config, "train_expert", "embodiment", default="vega"

@@ -574,20 +574,87 @@ def retarget_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
 
 
 def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
-    """Build simulator smoke-test stages for the selected embodiment."""
+    """Build simulator stages for the selected embodiment.
+
+    Vega: build the environment and replay the whole clip in physics without cameras
+    (`replay_metrics.py`), writing RUN_ROOT/simulate/vega/replay_metrics.json with the
+    numeric QA checks and a `flag` (flagged clips get the optional `render` video). A flag
+    is data, not a stage failure. Floating hands: the 2-step smoke (the replay metrics are
+    calibrated for the whole-body task only).
+    """
     stages: list[Stage] = []
     for name in _embodiments(embodiment):
-        task, motion = (
-            (
-                "Sharpa-V2D-v0-Play",
-                _motion_partition_relative(config.workflow, "sharpa_wave"),
+        task, motion = _simulate_task(config, name)
+        if name == "floating":
+            argv: tuple[str | Path, ...] = (
+                "scripts/rsl_rl/dummy_agent.py",
+                "--headless",
+                "--task",
+                task,
+                "--motion_file",
+                motion,
+                "--num_envs",
+                "1",
+                "--max_steps",
+                "2",
             )
-            if name == "floating"
-            else (
-                "VegaSharpa-WholeBody-Manip-v0",
-                _motion_partition_relative(config.workflow, "vega_sharpa"),
+            outputs: tuple[Path, ...] = ()
+            description = f"verify the {name} task registers and advances"
+        else:
+            output_container = config.container_path("run_root") / "simulate" / name
+            argv = (
+                "scripts/rsl_rl/replay_metrics.py",
+                "--headless",
+                "--task",
+                task,
+                "--motion_file",
+                motion,
+                "--output",
+                output_container / "replay_metrics.json",
+            )
+            outputs = (config.run_root / "simulate" / name / "replay_metrics.json",)
+            description = f"build the {name} environment and replay it in physics (QA metrics)"
+        command = _container_command(
+            config,
+            (*_container_env(config), "python", *argv),
+            label=f"simulate the {name} environment",
+        )
+        stages.append(
+            Stage(
+                f"simulate.{name}",
+                (command,),
+                inputs=(_motion_partition_host(config, motion.name.split("=", 1)[1]),),
+                outputs=outputs,
+                description=description,
             )
         )
+    return stages
+
+
+RENDER_VIDEO_LENGTH = 200  # environment steps recorded (one frame each)
+
+
+def _simulate_task(config: E2EConfig, name: str) -> tuple[str, Path]:
+    """Isaac Lab play task and motion partition for an embodiment (simulate and render)."""
+    if name == "floating":
+        return "Sharpa-V2D-v0-Play", _motion_partition_relative(config.workflow, "sharpa_wave")
+    return "VegaSharpa-WholeBody-Manip-v0", _motion_partition_relative(config.workflow, "vega_sharpa")
+
+
+def render_stages(
+    config: E2EConfig, embodiment: str, *, video_length: int = RENDER_VIDEO_LENGTH
+) -> list[Stage]:
+    """Build the optional "environment on video" visual check (Isaac RTX cameras).
+
+    Replays the environment with zero actions and the reference-motion markers on, and
+    records one MP4 per embodiment under RUN_ROOT/render/<embodiment>/. Nothing downstream
+    reads it: it is a human check, run on a sample of clips, off the delivery path.
+    """
+    stages: list[Stage] = []
+    for name in _embodiments(embodiment):
+        task, motion = _simulate_task(config, name)
+        output_host = config.run_root / "render" / name
+        output_container = config.container_path("run_root") / "render" / name
         command = _container_command(
             config,
             (
@@ -601,17 +668,24 @@ def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
                 motion,
                 "--num_envs",
                 "1",
-                "--max_steps",
-                "2",
+                "--debug_vis",
+                "--record_video",
+                "--output_dir",
+                output_container,
+                "--video_length",
+                str(video_length),
+                "--success_marker",
+                output_container / "render.done",
             ),
-            label=f"run the {name} Isaac Lab smoke",
+            label=f"render the {name} environment on video",
         )
         stages.append(
             Stage(
-                f"simulate.{name}",
+                f"render.{name}",
                 (command,),
                 inputs=(_motion_partition_host(config, motion.name.split("=", 1)[1]),),
-                description=f"verify the {name} task registers and advances",
+                outputs=(output_host,),
+                description=f"record the {name} environment on video (visual check)",
             )
         )
     return stages
@@ -629,15 +703,6 @@ def train_expert_stages(
     for name in _embodiments(embodiment):
         output_host = config.run_root / "train_expert" / name
         output_container = config.container_path("run_root") / "train_expert" / name
-        smoke_video_args: tuple[str, ...] = ()
-        if max_iterations == 1 and num_envs == 1:
-            smoke_video_args = (
-                "--video",
-                "--video_length",
-                "8",
-                "--video_interval",
-                "8",
-            )
         if name == "floating":
             task, motion = (
                 "Sharpa-V2D-v0",
@@ -669,7 +734,6 @@ def train_expert_stages(
                 "tensorboard",
                 "--run_name",
                 f"{config.workflow['sequence_id']}_{name}_e2e",
-                *smoke_video_args,
                 f"hydra.run.dir={output_container}/hydra/${{now:%Y-%m-%d_%H-%M-%S}}",
             ),
             label=f"train the {name} source expert",

@@ -17,8 +17,8 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 4 | Reconstruct (hands, object, camera bundle) | `reconstruct --fast` | **Optimized** (−73%; −79% vs stock re-run) | 9.75 min |
 | 5 | Reconstruction QA (pass/fail thresholds) | `inspect` | Exists; needs thresholds | 0.1 min |
 | 6 | Retarget (robot-agnostic human-hand motion + robot retargets) | `retarget` | Not optimized | 3.0 min |
-| 7 | Environment build (assets, collision, support surfaces) | `simulate` (build part) | Not optimized | 2.0 min |
-| 8 | Render overlay (visual check) | `simulate` (render part) | Not optimized | 5.3 min |
+| 7 | Environment build + physics QA replay (assets, collision, support surfaces; numeric flags) | `simulate` | Not optimized; QA added in the same boot | 2.0 min |
+| 8 | Render overlay (visual check) | `render` (optional; flagged + 1 in 20, after delivery) | **Off the critical path** | 0 on the path (was 5.3 min) |
 | 9 | Solvability check (replaces 13.4 h RL as our QA) | — | **To add** | — |
 | 10 | Task / reward spec | — | **To add** | — |
 | 11 | Export / package (Isaac Lab / USD; possibly MuJoCo) | — | **To add** | — |

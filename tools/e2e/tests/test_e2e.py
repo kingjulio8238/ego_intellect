@@ -49,6 +49,7 @@ from tools.e2e.stages import (
     reconstruct_stages,
     retarget_stages,
     setup_stages,
+    render_stages,
     simulate_stages,
     train_expert_stages,
 )
@@ -1006,6 +1007,7 @@ class StageTests(Fixture):
             "inspect": inspect_stages(config),
             "retarget": retarget_stages(config, "both"),
             "simulate": simulate_stages(config, "both"),
+            "render": render_stages(config, "both"),
             "train-expert": train_expert_stages(
                 config, "both", max_iterations=1, num_envs=1
             ),
@@ -1024,10 +1026,51 @@ class StageTests(Fixture):
                     Runner(config, dry_run=True).run_many(stages)
                 self.assertIn("[DRY-RUN]", output.getvalue())
 
+    def test_render_records_one_finite_video_per_embodiment(self) -> None:
+        config = self.make_ready_config()
+        stages = render_stages(config, "both", video_length=50)
+        self.assertEqual([stage.name for stage in stages], ["render.floating", "render.vega"])
+        for stage in stages:
+            command = stage.commands[0].argv
+            self.assertIn("--record_video", command)
+            self.assertIn("--debug_vis", command)
+            self.assertEqual(command[command.index("--video_length") + 1], "50")
+            self.assertEqual(command[command.index("--num_envs") + 1], "1")
+            self.assertTrue(
+                command[command.index("--output_dir") + 1].endswith(
+                    "/render/" + stage.name.split(".")[1]
+                )
+            )
+            self.assertTrue(command[command.index("--success_marker") + 1].endswith("render.done"))
+            self.assertEqual(stage.outputs, (config.run_root / "render" / stage.name.split(".")[1],))
+
+    def test_render_cli_persists_its_parameters(self) -> None:
+        config = self.make_ready_config("render-cli")
+        with mock.patch.object(cli.Runner, "run_many", return_value=[]) as run_many:
+            result = cli.main(["render", "--video-length", "40", "--config", str(config.path)])
+        self.assertEqual(result, 0)
+        stages = run_many.call_args.args[0]
+        self.assertEqual([stage.name for stage in stages], ["render.vega"])
+        command = stages[0].commands[0].argv
+        self.assertEqual(command[command.index("--video_length") + 1], "40")
+
     def test_simulate_smoke_is_finite(self) -> None:
         config = self.make_ready_config()
-        command = simulate_stages(config, "vega")[0].commands[0].argv
+        command = simulate_stages(config, "floating")[0].commands[0].argv
         self.assertEqual(command[command.index("--max_steps") + 1], "2")
+
+    def test_simulate_vega_replays_with_qa_metrics(self) -> None:
+        config = self.make_ready_config()
+        stage = simulate_stages(config, "vega")[0]
+        command = stage.commands[0].argv
+        self.assertIn("scripts/rsl_rl/replay_metrics.py", command)
+        self.assertNotIn("--enable_cameras", command)
+        self.assertTrue(
+            command[command.index("--output") + 1].endswith("/simulate/vega/replay_metrics.json")
+        )
+        self.assertEqual(
+            stage.outputs, (config.run_root / "simulate" / "vega" / "replay_metrics.json",)
+        )
 
     def test_open_loop_uses_standard_joint_evaluator(self) -> None:
         config = self.make_ready_config()
@@ -1293,6 +1336,7 @@ Path(args.save_plot_path).write_bytes(b'plot')
             ["inspect"],
             ["retarget", "--embodiment", "both"],
             ["simulate", "--embodiment", "both"],
+            ["render", "--embodiment", "both"],
             ["train-expert", "--embodiment", "both"],
             ["collect"],
             ["finetune"],
@@ -1318,15 +1362,15 @@ Path(args.save_plot_path).write_bytes(b'plot')
         self.assertEqual([stage.name for stage in stages], ["train-expert.vega"])
         command = stages[0].commands[0].argv
         self.assertIn("--output_root", command)
-        self.assertIn("--video", command)
-        self.assertIn("--video_length", command)
+        # The environment video is the separate, optional `render` stage now: training stays
+        # camera-free (and runs where Isaac RTX cameras do not, e.g. Modal).
+        self.assertNotIn("--video", command)
+        self.assertFalse(any(arg.startswith("--video") for arg in command))
         self.assertNotIn("--contract", command)
         self.assertNotIn("--task-profile", command)
         self.assertNotIn("--zero-actor", command)
         self.assertFalse(any(arg.startswith("agent.") for arg in command))
         self.assertFalse(any(arg.startswith("env.rewards.") for arg in command))
-        interval_index = command.index("--video_interval") + 1
-        self.assertEqual(command[interval_index], "8")
         self.assertTrue(any(arg.startswith("hydra.run.dir=") for arg in command))
         configured = load_config(config.path).stage("train_expert")
         self.assertEqual(configured["embodiment"], "vega")

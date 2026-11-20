@@ -129,6 +129,15 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+    # RecordVideo re-triggers on every step that matches the interval, even mid-recording, so
+    # an interval shorter than the length writes one short clip per step (interval 1, length
+    # 200: 240 one-frame files). One continuous clip needs interval >= length.
+    if args_cli.video_interval < args_cli.video_length:
+        print(
+            f"[WARN] --video_interval {args_cli.video_interval} < --video_length "
+            f"{args_cli.video_length}; using {args_cli.video_length} so each video is one clip"
+        )
+        args_cli.video_interval = args_cli.video_length
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args

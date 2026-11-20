@@ -34,11 +34,15 @@ the speculative containers that `--fast` starts for single-clip latency (each ho
 containers counting against the cap; costs a ~6-17 s cold start per call);
 `hedge_after_s` (0 disables) re-sends a call that has no container yet to a second pool.
 
+`render_every` (default 20; 0: none): which clips get the optional environment video
+(`render_queue`). The batch records the queue; it is drained after delivery, never inline.
+
 Run roots are /e2e/runs/<name>. Paths are as seen inside the control container.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 
@@ -87,6 +91,28 @@ def clip_steps(clip: dict, manifest: dict) -> list[list[str]]:
         reconstruct_args = clip.get("reconstruct_args") or manifest.get("reconstruct_args") or DEFAULT_RECONSTRUCT_ARGS
         steps.append(["--config", config, "reconstruct", "--video", clip["video"], *reconstruct_args])
     return steps
+
+
+RENDER_EVERY = 20  # 1 clip in N gets the optional `render` visual check, plus every flagged clip
+
+
+def render_queue(names: list[str], every: int = RENDER_EVERY, flagged: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """Clips that get the optional environment video (`run_e2e.sh render`): every flagged clip
+    (failed a numeric check) plus a stable 1-in-`every` sample. The sample hashes the clip
+    name, so it does not depend on manifest order, batch size or reruns. every <= 0: flagged only."""
+    flagged_set = set(flagged)
+    chosen = []
+    for name in names:
+        sampled = every > 0 and int(hashlib.sha1(name.encode()).hexdigest(), 16) % every == 0
+        if name in flagged_set or sampled:
+            chosen.append(name)
+    return chosen
+
+
+def render_commands(names: list[str]) -> list[list[str]]:
+    """run_e2e.sh argvs that drain a render queue: one GPU, after the clip is delivered
+    (needs `retarget` output); never on a clip's critical path."""
+    return [["--config", f"{RUNS}/{name}/{CONFIG}", "render"] for name in names]
 
 
 def summarize(results: list[dict]) -> str:

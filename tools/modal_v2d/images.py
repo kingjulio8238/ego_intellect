@@ -145,13 +145,57 @@ OPEN3D_COMPAT = (
 # are the same. Built for every architecture the module images target (A100 8.0, A10G 8.6,
 # L40S 8.9, H100 9.0), so hedged calls can run on another GPU type (batch mode).
 GSPLAT_JIT_IMAGES = {"v2d_sam3d"}
-GSPLAT_ARCHS = "8.0;8.6;8.9;9.0"
+GSPLAT_ARCHS = "12.0" if C.ARCH == "blackwell" else "8.0;8.6;8.9;9.0"
 GSPLAT_PREBUILD_ENV = {"TORCH_EXTENSIONS_DIR": "/opt/torch_extensions", "TORCH_CUDA_ARCH_LIST": GSPLAT_ARCHS}
 GSPLAT_PREBUILD = (
     "mkdir -p /opt/torch_extensions && cd /tmp && "
     f"TORCH_EXTENSIONS_DIR=/opt/torch_extensions TORCH_CUDA_ARCH_LIST='{GSPLAT_ARCHS}' "
     "python -c 'from gsplat.cuda._backend import _C; assert _C is not None; print(\"gsplat_cuda prebuilt\")'"
 )
+
+
+# Blackwell (sm 12.0) needs CUDA >= 12.8 and libraries built for it. The module Dockerfiles
+# target PyTorch 2.5.1 + CUDA 12.4 (no sm 12.0 kernels); this variant swaps the version pins
+# for their nearest Blackwell-capable equivalents and compiles CUDA code for 12.0 only.
+# Verified wheel indexes (2026-11-20): kaolin 0.18.0 torch-2.7.1_cu128, torch-scatter
+# pt27cu128; TensorRT 10.9.0.34 (+cuda12.8) is the first 10.x with Blackwell in our apt repo.
+BLACKWELL_SUBS = [
+    (r"pytorch/pytorch:2\.5\.1-cuda12\.4-cudnn9-devel", "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel"),
+    (r'TORCH_CUDA_ARCH_LIST=("?)[0-9.; ]+\1', 'TORCH_CUDA_ARCH_LIST="12.0"'),
+    (r"torch-2\.5\.1_cu124\.html", "torch-2.7.1_cu128.html"),
+    (r"torch-2\.5\.1\+cu124\.html", "torch-2.7.1+cu128.html"),
+    (r"cumm-cu124", "cumm-cu126"),
+    (r"spconv-cu124", "spconv-cu126"),
+    (r"10\.7\.0\.23-1\+cuda12\.6", "10.9.0.34-1+cuda12.8"),
+    (r"tensorrt-cu12==10\.7\.0\.post1", "tensorrt-cu12==10.9.0.34"),
+    # GroundingDINO's deformable-attention op dispatches on `Tensor.type()`, removed from
+    # the dispatch macros in PyTorch 2.7 (build error "no suitable conversion function from
+    # DeprecatedTypeProperties to c10::ScalarType"); `scalar_type()` is the same type.
+    (r"cd /tmp/GroundingDINO && ",
+     lambda m: "cd /tmp/GroundingDINO && sed -i 's/value[.]type(),/value.scalar_type(),/g' "
+               "groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cuda.cu && "),
+    # Same removed dispatch form in FoundationPose's own CUDA ops (bundlesdf/mycuda/common.cu).
+    (r"cd /workspace/v2d_foundation_pose/lib/FoundationPose/bundlesdf/mycuda && ",
+     lambda m: "cd /workspace/v2d_foundation_pose/lib/FoundationPose/bundlesdf/mycuda && "
+               "sed -i 's/[.]type(), \"/.scalar_type(), \"/g' *.cu && "),
+    # sam-3d-objects imports flash_attn only on A100/H100/H200; other GPUs use sdpa.
+    (r"MAX_JOBS=4 pip install flash-attn==2\.7\.4\.post1 --no-build-isolation",
+     "echo 'flash-attn skipped: sdpa attention on Blackwell RTX'"),
+    # WiLoR-mini pins torch<=2.5 and pip silently swapped in torch 2.5.0 (no sm 12.0 kernels:
+    # "no kernel image is available"). Same package, its other requirements, the image's torch.
+    (r"pip install --no-cache-dir git\+https://github\.com/warmshao/WiLoR-mini\.git$",
+     "pip install --no-cache-dir --no-deps git+https://github.com/warmshao/WiLoR-mini.git && "
+     "pip install --no-cache-dir smplx==0.1.28 timm einops ultralytics==8.1.34 opencv-python "
+     "huggingface_hub scikit-image roma"),
+]
+
+
+def blackwell_instruction(instruction: str) -> str:
+    import re  # noqa: PLC0415
+
+    for pattern, replacement in BLACKWELL_SUBS:
+        instruction = re.sub(pattern, replacement, instruction)
+    return instruction
 
 
 def _dockerfile_instructions(path: Path) -> list[str]:
@@ -170,6 +214,12 @@ def _dockerfile_instructions(path: Path) -> list[str]:
             current = ""
     if current:
         out.append(current)
+    if C.ARCH == "blackwell":
+        out = [blackwell_instruction(instruction) for instruction in out]
+        if any("cmake " in instruction for instruction in out):
+            # The PyTorch 2.7.1 image ships CMake 4, which rejects projects declaring
+            # cmake_minimum_required < 3.5 (pybind11 v2.10.0, FoundationPose's mycpp).
+            out.insert(1, "ENV CMAKE_POLICY_VERSION_MINIMUM=3.5")
     return out
 
 
@@ -211,7 +261,7 @@ def module_image(image_name: str) -> modal.Image:
         for instruction in instructions[first_copy:]:
             image = image.dockerfile_commands([instruction], context_dir=MODULES)
         return image.entrypoint([]).run_commands(CAPTURE_IMAGE_ENV)
-    pre_dir = SPLIT_DOCKERFILE_DIR / image_name
+    pre_dir = SPLIT_DOCKERFILE_DIR / (image_name if C.ARCH == "ada" else f"{image_name}-{C.ARCH}")
     (pre_dir / "context").mkdir(parents=True, exist_ok=True)
     pre_file = pre_dir / "Dockerfile"
     pre_text = "\n".join(instructions[:first_copy]) + "\n"
@@ -235,6 +285,11 @@ def module_image(image_name: str) -> modal.Image:
             copy=True,
             ignore=LOADER_RG_PKG_IGNORE,
         )
+    if C.ARCH == "blackwell":
+        # PyTorch >= 2.6 defaults torch.load to weights_only=True, which rejects the pickled
+        # checkpoints these modules load (WiLoR: "Weights only load failed"). The Ada images'
+        # PyTorch 2.5.1 loads them fully; restore that behaviour.
+        image = image.env({"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"})
     # No `--dev` upload: the image was just built from this checkout (see C.DEV_MOUNT).
     return image.run_commands(CAPTURE_IMAGE_ENV)
 

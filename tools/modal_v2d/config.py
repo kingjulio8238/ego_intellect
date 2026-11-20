@@ -90,6 +90,11 @@ IMAGE_PATH_PREFIX = {RG_IMAGE: ISAAC_BIN}
 # FoundationPose TensorRT engines are arch-specific, so keep module GPUs on one type too.
 RG_GPU = os.environ.get("V2D_MODAL_RG_GPU", "L40S")
 MODULE_GPU = os.environ.get("V2D_MODAL_MODULE_GPU", "L40S")
+# Image variant for a GPU generation: "ada" (L40S, sm 8.9; the module Dockerfiles as written)
+# or "blackwell" (RTX PRO 6000, sm 12.0: PyTorch 2.7.1 + CUDA 12.8 base, CUDA builds for 12.0,
+# Blackwell-capable TensorRT; see images.blackwell_instruction). Pair it with
+# V2D_MODAL_MODULE_GPU=RTX-PRO-6000.
+ARCH = os.environ.get("V2D_MODAL_ARCH", "ada")
 # A comma-separated value is a Modal GPU fallback list, e.g. "L40S,H100,A100-80GB": Modal takes
 # the first type with capacity (measured: falls back within ~3 s when the preferred type has
 # none, 2026-11-19). Every listed type must pass the numerics gate (docs/pipeline/OPTIMIZATION.md);
@@ -191,7 +196,7 @@ PREFETCH_PARALLEL = int(os.environ.get("V2D_MODAL_PREFETCH_PARALLEL", "12"))
 CPU_ONLY_MARKERS = () if os.environ.get("V2D_MODAL_DOWNLOADS_ON_GPU") == "1" else ("download_weights",)
 # USD per hour; Modal list prices. Billing (`modal billing report`) is the source of truth.
 RATES = {
-    "gpu_h": {"L40S": 1.95, "A10G": 1.10, "L4": 0.80, "A100": 2.10, "A100-40GB": 2.10, "A100-80GB": 2.50, "H100": 3.95, "T4": 0.59},
+    "gpu_h": {"L40S": 1.95, "RTX-PRO-6000": 3.03, "A10G": 1.10, "L4": 0.80, "A100": 2.10, "A100-40GB": 2.10, "A100-80GB": 2.50, "H100": 3.95, "T4": 0.59},
     "gpu_h_unknown": 4.0,
     "cpu_core_h": 0.0473,
     "mem_gib_h": 0.0080,
@@ -203,7 +208,7 @@ RATES = {
 #   rg:      GPU container built from robotic_grounding/workflow/Dockerfile + Isaac-GR00T;
 #            the `robotic-grounding` image runs locally, the loader image remotely.
 CONTROL_COMMANDS = {"init", "use", "status", "setup", "reconstruct", "import-reconstruction", "inspect"}
-RG_COMMANDS = {"doctor", "retarget", "simulate", "train-expert", "collect", "finetune", "evaluate"}
+RG_COMMANDS = {"doctor", "retarget", "simulate", "render", "train-expert", "collect", "finetune", "evaluate"}
 GLOBAL_FLAGS_WITH_VALUE = {"--config"}
 
 
