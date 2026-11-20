@@ -9,7 +9,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 | Rank | Stage | Why here | Status |
 |---|---|---|---|
 | 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (rounds 1–2)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip; sharding across workspaces, preemption-safe |
-| 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **In progress**: phases A–C done (off the critical path; optional, sampled `render`; numeric QA in `simulate`) — see below |
+| 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **Done**: 5.3 min → 0 on the critical path; numeric QA in `simulate` (+1 min, same boot); overlay video 20 s after delivery for flagged + 1 in 20 — see below |
 | 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | Todo |
 | 4 | Retarget (3.0 min) | Next-largest existing stage | Todo |
 | 5 | Environment build (2.0 min) | | Todo |
@@ -222,14 +222,44 @@ clip is a thin baseline (re-calibrate as reviewed clips accumulate); the defects
 synthetic; missed-contact and wrist checks were not triggered by any defect here; the
 floating-hand embodiment keeps the 2-step smoke (checks calibrated for Vega only).
 
-Found on the way: any edit under `robotic_grounding/` (even a `__pycache__`) rebuilds the
-whole rg image on Modal (~18 min), because it is built from the directory as one Docker
-context. Splitting it like the module images (cached layers before the source COPY) is a
-setup item.
+**G, robot-stack image rebuilds.** Any edit under `robotic_grounding/` (even a stray
+`__pycache__`) rebuilt the whole rg image on Modal (~18 min): it was one Docker layer with the
+directory as context, and the GR00T layers came after it. Now it is built in three parts like the
+module images (`images.robotic_grounding_image`): the Dockerfile's steps before its first COPY
+(empty context), then GR00T/nvcc/host packages, then the source COPY and the steps after it;
+`.dockerignore` now also drops nested `__pycache__`/`*.pyc`. Measured on sales-32662: cold build
+16 min (once per workspace); a source edit **66 s** (rebuilds from `COPY scripts/` only); a
+`__pycache__`-only change **15 s, same image** (no rebuild).
 
-Open: draining the queue needs a renderer that runs where batches run. Phase D (pyrender
-overlay, Modal-capable) provides it; until then the queue runs with `./run_e2e.sh render` on an
-RTX host. Flags come from phase C.
+**Phase D, overlay video on Modal.** `render` now defaults to `--backend overlay`:
+`scripts/render_replay_overlay.py` draws `simulate`'s physics replay (`replay_metrics.py` saves
+`replay_states.npz`: joints, object and reference poses, wrists) with pyrender/EGL: robot
+(pinocchio FK from the simulated joints), object where physics put it (orange), reference ghost
+(green), wrist targets vs simulated wrists, support surface, and a caption with the QA verdict.
+No Isaac, no RTX: **18–21 s per clip on Modal L40S, ~$0.02**, vs 5.3 min on a Vast A6000 for the
+RTX clip. `--backend rtx` (Isaac cameras) stays for demos on an RTX host and is refused on
+Modal. Compared with the stored RTX clip of tissue_box: the RTX clip is a distant view of the
+robot with axis markers; the overlay is a close view where the physics object and its reference
+are drawn together, so a float, sink, drop or desync shows as the two boxes separating, and the
+QA verdict is printed on the frame. Each synthetic defect is visible (see the D3 check below).
+
+**Phase F, batches.** A batch manifest now runs, per clip, `robot_steps` (default
+`["retarget", "simulate"]`) in one rg GPU container after the reconstruction phase
+(`app.batch_pipeline`), reads each clip's QA flag, and drains the render queue (flagged clips
+plus a stable 1-in-`render_every` sample) last, one clip at a time. Result record:
+`.e2e/batch/<id>/pipeline.json` and the progress store. Verified on sales-32662 with two
+reconstructed tissue_box clips (`b3_tbseed`, `b3_tb2`; `render_every: 1` to exercise the
+drain): 2/2 delivered in 5.3 min (retarget 3.5 min + simulate 1.1 min per clip, 2 in parallel),
+renders 30 s each after delivery, ~$0.5 in total. Both clips were **flagged**: the reference
+object drifts 4.8–5.2 cm before contact and the wrists drift 5.5–5.7 cm in the object frame
+during contact (reviewed tissue_box_simple: 2.4 and 2.3 cm). The overlay shows the reference
+box moving away from the resting physics box before the grasp and the hands not enclosing the
+box: these fast-pipeline reconstructions (SAM3D mesh, no cleaned scan) look worse than the
+reviewed clip, but no human has reviewed them yet, so whether this is a real defect or limits that are too tight is open.
+
+Limits: the robot phase starts after every clip's reconstruction (the reconstruction container
+holds all the clips' run-root locks until it ends); per-clip hand-off is a follow-up. The
+`rtx` backend was not re-run (same command as before, refused on Modal).
 
 ## Chip choice: L40S vs RTX PRO 6000 Blackwell (2026-11-20)
 
@@ -276,9 +306,14 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
 - [x] C. Numeric checks from a camera-free physics replay in `simulate` (one boot), plus
       the kinematic grasp-drift check; calibrated on tissue_box and 4 synthetic defects.
       Building block for the solvability check (rank 3).
-- [ ] D. pyrender overlay renderer (`render_verification_video`), Modal-capable; compare
-      with the RTX clip on one clip; default video if it shows the same defects.
-- [ ] F. Batch check and write-up. (E, per-clip RTX, not planned: internal QA only.)
+- [x] G. rg image split: a robotic_grounding edit rebuilds in 66 s (was ~18 min).
+- [x] D. Overlay renderer of the physics replay (default `render` backend), 18–21 s/clip on
+      Modal; every synthetic defect visible; compared with the RTX clip.
+- [x] F. Batches run retarget → simulate per clip, gate on the QA flag, drain the render
+      queue last; verified on 2 clips. (E, per-clip RTX, not planned: internal QA only.)
+- [ ] Follow-ups: review the 2 flagged fast-pipeline clips (real defect or limits too
+      tight?) and re-calibrate on reviewed clips; per-clip hand-off from reconstruction to
+      the robot phase; floating-hand QA/overlay; RTX profile only if demos need it.
 
 **3. Solvability check (new)**
 - [ ] Define "solvable" with the labs' acceptance in mind: object follows the retargeted

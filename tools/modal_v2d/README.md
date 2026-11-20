@@ -132,7 +132,11 @@ python -m tools.modal_v2d.bootstrap_workspace --src <prepared profile> --dst <ne
 One Modal app and (by default) one control container run every clip; a GPU ledger keeps the
 batch under the workspace's 10-GPU cap and reuses idle containers across clips; calls with
 no container after 30 s are hedged on a twin pool. Per-workspace setup (images, weights) is
-done once; each clip runs `init`, `setup --skip-reconstruction`, `reconstruct`.
+done once; each clip runs `init`, `setup --skip-reconstruction`, `reconstruct`, then (manifest
+`robot_steps`, default `["retarget", "simulate"]`) its robot steps in one GPU container. `simulate`
+writes the clip's physics-QA flag; the optional environment video (`render`, a pyrender overlay
+of that replay, ~20 s) goes to flagged clips plus 1 in `render_every` (default 20), after every
+clip is delivered. Record: `.e2e/batch/<id>/pipeline.json`.
 
 ## Watching and retrieving results
 

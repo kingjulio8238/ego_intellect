@@ -26,6 +26,7 @@ import socket
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import modal
 
@@ -545,6 +546,117 @@ def control_batch(clips: list[dict], max_parallel: int, source_revision: str, ba
         _release_lock(token, keys)
 
 
+@app.function(
+    image=IMAGES["control"],
+    volumes=VOLUMES,
+    timeout=C.CONTROL_TIMEOUT,
+    retries=0,
+    cpu=1,
+    memory=1024,
+)
+def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, batch_id: str, app_id: str = "",
+                   options: dict | None = None, mode: str = "shared", robot: list[dict] | None = None,
+                   render_every: int = 20, robot_parallel: int = 4) -> dict:
+    """The whole batch, remotely (a detached batch keeps going after the laptop disconnects):
+
+    1. reconstruct: every clip's control steps (control_batch, or batch_driver per clip);
+    2. robot: per reconstructed clip, its robot steps (retarget, simulate) in one rg container,
+       `robot_parallel` clips at a time;
+    3. render: the optional environment video for flagged clips plus a 1-in-`render_every`
+       sample, one clip at a time, after everything else.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tools.modal_v2d import batch as B
+    from tools.modal_v2d import sync
+
+    def stamp() -> str:
+        return time.strftime("%H:%M:%SZ", time.gmtime())
+
+    t0 = time.time()
+    if mode == "shared":
+        recon = control_batch.remote(clips, max_parallel, source_revision, batch_id, app_id, options)
+    elif mode == "per_clip":
+        recon = batch_driver.remote(clips, max_parallel, source_revision, batch_id, app_id, options)
+    else:
+        raise ValueError(f"unknown batch mode {mode!r}")
+    print(B.summarize(recon), flush=True)
+    t_recon = time.time()
+    ok = [r["name"] for r in recon if r["code"] == 0]
+    steps = {item["name"]: item["steps"] for item in (robot or [])}
+
+    def robot_one(name: str) -> dict:
+        start = time.time()
+        try:
+            code = rg.remote(steps[name], source_revision, False, f"{batch_id}-{name}-robot", app_id, options)
+        except Exception as exc:  # noqa: BLE001 - one clip failing must not stop the batch
+            code = f"{type(exc).__name__}: {exc}"[:200]
+        result = {"name": name, "code": code, "start": start, "end": time.time()}
+        print(f"[v2d-batch {stamp()}] {name}: robot steps {'ok' if code == 0 else 'FAILED ' + str(code)} "
+              f"in {result['end'] - start:.0f}s", flush=True)
+        progress_store.put(f"batch:{batch_id}:{name}:robot", result)
+        return result
+
+    robot_results = []
+    todo = [name for name in ok if steps.get(name)]
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, robot_parallel)) as pool:
+            robot_results = list(pool.map(robot_one, todo))
+    t_robot = time.time()
+
+    state_volume.reload()
+    qa: dict[str, dict] = {}
+    for result in robot_results:
+        if result["code"] != 0:
+            continue
+        path = sync.mirror_path(C.MIRROR_ROOT, B.qa_report_path(result["name"]))
+        try:
+            report = json.loads(Path(path).read_text())
+            qa[result["name"]] = {"flag": bool(report.get("flag")), "reasons": report.get("flag_reasons", [])}
+        except (OSError, ValueError) as exc:
+            qa[result["name"]] = {"flag": None, "reasons": [f"no QA report: {exc}"]}
+    flagged = [name for name, item in qa.items() if item["flag"]]
+    simulated = [r["name"] for r in robot_results if r["code"] == 0]
+    queue = B.render_queue(simulated, render_every, flagged)
+    print(f"[v2d-batch {stamp()}] QA: {len(flagged)}/{len(qa)} flagged {flagged}; "
+          f"render queue (flagged + 1 in {render_every}): {queue}", flush=True)
+
+    renders = []
+    for name, argv in zip(queue, B.render_commands(queue)):  # low priority: one at a time, last
+        start = time.time()
+        try:
+            code = rg.remote(argv, source_revision, False, f"{batch_id}-{name}-render", app_id, options)
+        except Exception as exc:  # noqa: BLE001
+            code = f"{type(exc).__name__}: {exc}"[:200]
+        renders.append({"name": name, "code": code, "seconds": round(time.time() - start, 1)})
+        print(f"[v2d-batch {stamp()}] {name}: render {'ok' if code == 0 else 'FAILED ' + str(code)}", flush=True)
+    t_end = time.time()
+
+    def ok_code(name: str, results: list[dict]) -> bool:
+        return any(r["name"] == name and r["code"] == 0 for r in results)
+
+    delivered = [name for name in ok if not steps.get(name) or ok_code(name, robot_results)]
+    summary = {
+        "batch_id": batch_id,
+        "clips": len(clips),
+        "reconstructed": ok,
+        "robot": robot_results,
+        "delivered": delivered,
+        "qa": qa,
+        "flagged": flagged,
+        "render_every": render_every,
+        "render_queue": queue,
+        "renders": renders,
+        "phase_s": {"reconstruct": round(t_recon - t0), "robot": round(t_robot - t_recon),
+                    "render": round(t_end - t_robot)},
+        "delivered_per_h": round(len(delivered) / max(t_robot - t0, 1e-9) * 3600, 2),
+    }
+    print(f"[v2d-batch {stamp()}] {len(delivered)}/{len(clips)} delivered in {(t_robot - t0) / 60:.1f} min "
+          f"(render after delivery: {(t_end - t_robot) / 60:.1f} min) | {json.dumps(summary['phase_s'])}", flush=True)
+    progress_store.put(f"batch:{batch_id}:pipeline", summary)
+    return {"recon": recon, "pipeline": summary}
+
+
 @app.function(image=IMAGES["control"], volumes=VOLUMES, timeout=1800, retries=0, cpu=1, memory=1024)
 def startup_probe_driver(images: list[str], rounds: int) -> list[dict]:
     """Container start latency of real module images: one no-op call per image per round,
@@ -740,26 +852,27 @@ def batch(manifest: str, max_parallel: int = 4) -> None:
         for step in clip["steps"]:
             print(f"  {clip['name']}: run_e2e.sh {' '.join(step)}")
     _tag({"v2d_invocation": batch_id, "v2d_command": "batch", "v2d_role": "batch"})
-    queue = B.render_queue([clip["name"] for clip in clips], int(spec.get("render_every", B.RENDER_EVERY)))
-    queue_record = {"batch_id": batch_id, "render_every": int(spec.get("render_every", B.RENDER_EVERY)),
-                    "clips": queue, "commands": B.render_commands(queue)}
-    queue_path = Path(__file__).resolve().parents[2] / ".e2e" / "batch" / batch_id / "render_queue.json"
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(json.dumps(queue_record, indent=1))
-    progress_store.put(f"batch:{batch_id}:render_queue", queue_record)
-    print(f"[v2d-batch] render queue (optional video, after delivery): {queue or 'none'} -> {queue_path}")
+    robot = [{"name": clip["name"], "steps": B.robot_steps(clip["name"], spec)} for clip in spec["clips"]]
+    for item in robot:
+        for step in item["steps"]:
+            print(f"  {item['name']}: run_e2e.sh {' '.join(step)}  (robot phase, rg container)")
+    render_every = int(spec.get("render_every", B.RENDER_EVERY))
     options = {"scaledown_s": C.MODULE_SCALEDOWN_S, "scaledown_per_image": C.SCALEDOWN_PER_IMAGE,
                **(spec.get("options") or {})}
     mode = spec.get("mode", "shared")
     print(f"[v2d-batch] mode {mode} | options {options} | module scaledown {C.MODULE_SCALEDOWN_S}s")
-    if mode == "shared":  # one control container: one GPU ledger sees the whole batch
-        results = control_batch.remote(clips, max_parallel, _source_revision(), batch_id, app.app_id or "", options)
-    elif mode == "per_clip":  # one control container per clip (GPU slots coordinate them)
-        results = batch_driver.remote(clips, max_parallel, _source_revision(), batch_id, app.app_id or "", options)
-    else:
+    if mode not in ("shared", "per_clip"):  # shared: one control container, one GPU ledger
         raise SystemExit(f"unknown batch mode {mode!r} (shared | per_clip)")
+    out = batch_pipeline.remote(clips, max_parallel, _source_revision(), batch_id, app.app_id or "", options,
+                                mode, robot, render_every, int(spec.get("robot_parallel", 4)))
+    results, pipeline = out["recon"], out["pipeline"]
     print(B.summarize(results))
-    if any(r["code"] != 0 for r in results):
+    record = Path(__file__).resolve().parents[2] / ".e2e" / "batch" / batch_id / "pipeline.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(pipeline, indent=1))
+    print(f"[v2d-batch] delivered {len(pipeline['delivered'])}/{len(results)} | flagged {pipeline['flagged']} | "
+          f"rendered {[r['name'] for r in pipeline['renders'] if r['code'] == 0]} -> {record}")
+    if len(pipeline["delivered"]) != len(results) or any(r["code"] != 0 for r in pipeline["renders"]):
         raise SystemExit("some clips failed")
 
 

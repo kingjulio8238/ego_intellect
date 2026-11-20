@@ -198,7 +198,7 @@ def blackwell_instruction(instruction: str) -> str:
     return instruction
 
 
-def _dockerfile_instructions(path: Path) -> list[str]:
+def _dockerfile_instructions(path: Path, *, arch_rewrite: bool = True) -> list[str]:
     """Dockerfile -> instructions (comments dropped, `\\` continuations joined verbatim)."""
     out: list[str] = []
     current = ""
@@ -214,7 +214,7 @@ def _dockerfile_instructions(path: Path) -> list[str]:
             current = ""
     if current:
         out.append(current)
-    if C.ARCH == "blackwell":
+    if C.ARCH == "blackwell" and arch_rewrite:
         out = [blackwell_instruction(instruction) for instruction in out]
         if any("cmake " in instruction for instruction in out):
             # The PyTorch 2.7.1 image ships CMake 4, which rejects projects declaring
@@ -346,14 +346,39 @@ def render_robotic_grounding_dockerfile(source: str) -> str:
 
 
 def robotic_grounding_image() -> modal.Image:
-    if modal.is_local():  # inside containers the image is already built; nothing to render
-        GENERATED_RG_DOCKERFILE.parent.mkdir(parents=True, exist_ok=True)
-        GENERATED_RG_DOCKERFILE.write_text(
-            render_robotic_grounding_dockerfile((RG_ROOT / "workflow" / "Dockerfile").read_text())
-        )
-    return (
+    """robotic_grounding/workflow/Dockerfile plus GR00T, built in three parts.
+
+    1. Everything in the Dockerfile before its first COPY (Isaac Lab base, apt, pip) from a
+       generated Dockerfile with an empty context.
+    2. The source-independent additions (GR00T checkout and uv env, nvcc, serializer
+       patch, host packages).
+    3. The Dockerfile's COPY of the robotic_grounding sources and the steps after it
+       (editable install, python wrapper), one Modal layer per instruction.
+    Parts 1-2 stay cached across source edits; an edit under robotic_grounding/ rebuilds
+    only part 3 (about a minute). Before this split the whole Dockerfile was one layer with
+    robotic_grounding/ as its context, and GR00T's layers sat after it: every edit,
+    even a stray __pycache__, rebuilt everything (~18 min, render overlay phase C).
+    """
+    if not modal.is_local():  # inside containers the image is already built; nothing to render
+        return modal.Image.from_dockerfile(GENERATED_RG_DOCKERFILE, context_dir=RG_ROOT, add_python="3.11")
+    GENERATED_RG_DOCKERFILE.parent.mkdir(parents=True, exist_ok=True)
+    GENERATED_RG_DOCKERFILE.write_text(
+        render_robotic_grounding_dockerfile((RG_ROOT / "workflow" / "Dockerfile").read_text())
+    )
+    instructions = _dockerfile_instructions(GENERATED_RG_DOCKERFILE, arch_rewrite=False)
+    first_copy = next(
+        (k for k, ins in enumerate(instructions) if ins.split(None, 1)[0].upper() in {"COPY", "ADD"}),
+        len(instructions),
+    )
+    pre_dir = SPLIT_DOCKERFILE_DIR / C.RG_IMAGE
+    (pre_dir / "context").mkdir(parents=True, exist_ok=True)
+    pre_file = pre_dir / "Dockerfile"
+    pre_text = "\n".join(instructions[:first_copy]) + "\n"
+    if not pre_file.exists() or pre_file.read_text() != pre_text:
+        pre_file.write_text(pre_text)
+    image = (
         # add_python installs Modal's runtime Python at /usr/local (the wrapper moved away).
-        modal.Image.from_dockerfile(GENERATED_RG_DOCKERFILE, context_dir=RG_ROOT, add_python="3.11")
+        modal.Image.from_dockerfile(pre_file, context_dir=pre_dir / "context", add_python="3.11")
         .entrypoint([])
         .run_commands(
             "apt-get update && apt-get install -y --no-install-recommends git git-lfs curl vulkan-tools "
@@ -391,10 +416,13 @@ def robotic_grounding_image() -> modal.Image:
             # `docker exec <rg> bash -lc "... python ..."` (run_eval.sh) must still resolve
             # `python` to the Isaac Lab wrapper if a login profile rewrites PATH.
             f"echo 'export PATH={C.ISAAC_BIN}:$PATH' > /etc/profile.d/zz-v2d-isaac-python.sh",
-            ISAAC_PYARROW_COMPAT,
-            CAPTURE_IMAGE_ENV,
         )
     )
+    for instruction in instructions[first_copy:]:
+        # Same build context as `workflow/run.sh build`; Modal honours robotic_grounding/.dockerignore.
+        image = image.dockerfile_commands([instruction], context_dir=RG_ROOT)
+    # The editable install can move pyarrow/numpy, so the pyarrow check runs after it.
+    return image.entrypoint([]).run_commands(ISAAC_PYARROW_COMPAT, CAPTURE_IMAGE_ENV)
 
 
 def control_image() -> modal.Image:

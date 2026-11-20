@@ -62,6 +62,14 @@ parser.add_argument("--task", type=str, required=True)
 parser.add_argument("--motion_file", type=str, required=True)
 parser.add_argument("--output", type=str, required=True, help="metrics JSON path")
 parser.add_argument(
+    "--states_out",
+    type=str,
+    default="",
+    help="also save the replayed physics states (robot joints, object and reference poses) "
+    "to this .npz for scripts/render_replay_overlay.py; default: replay_states.npz next to "
+    "--output; 'none' to skip",
+)
+parser.add_argument(
     "--max_steps",
     type=int,
     default=0,
@@ -187,6 +195,17 @@ def _grasp_drift(motion_dir: str) -> dict:
     return grasp_drift(pq.read_table(files[0]).to_pydict())
 
 
+def _object_mesh_path(motion_dir: str) -> str:
+    """The object's visual mesh as recorded in the motion parquet (first body)."""
+    import glob
+
+    import pyarrow.parquet as pq
+
+    files = sorted(glob.glob(os.path.join(motion_dir, "*.parquet")))
+    paths = pq.read_table(files[0], columns=["object_mesh_paths"]).column(0)[0].as_py() if files else []
+    return str(paths[0]) if paths else ""
+
+
 def _summary(values: list[float]) -> dict:
     if not values:
         return {"n": 0}
@@ -238,10 +257,39 @@ def main() -> int:
         missed.append(_missed(unwrapped) if whole_body else float("nan"))
         timesteps.append(int(_first(command.timestep)))
 
+    states: dict[str, list] = {
+        key: []
+        for key in ("joint_pos", "object_pos", "object_wxyz", "ref_object_pos",
+                    "ref_object_wxyz", "ee_pos", "ref_ee_pos", "timestep")
+    }
+    states_error: list[str] = []
+    robot = unwrapped.scene["robot"] if whole_body else None
+    origin = unwrapped.scene.env_origins[0]
+
+    def _vec(x, width: int) -> np.ndarray:
+        return x[0].reshape(-1, width)[0].detach().cpu().numpy().astype(np.float32)
+
+    def record_state() -> None:
+        if robot is None or states_error:
+            return
+        try:
+            states["joint_pos"].append(robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32))
+            states["object_pos"].append(_vec(command.object_pos_w - origin, 3))
+            states["object_wxyz"].append(_vec(command.object_quat_w, 4))
+            states["ref_object_pos"].append(_vec(command.command_object_pos_w - origin, 3))
+            states["ref_object_wxyz"].append(_vec(command.command_object_quat_w, 4))
+            states["ee_pos"].append((command.robot_ee_pos_w[0] - origin).reshape(-1, 3).detach().cpu().numpy())
+            states["ref_ee_pos"].append((command.command_ee_pos_w[0] - origin).reshape(-1, 3).detach().cpu().numpy())
+            states["timestep"].append(int(_first(command.timestep)))
+        except Exception as exc:  # noqa: BLE001 - the video is optional; the metrics are not
+            states_error.append(f"{type(exc).__name__}: {exc}")
+            print(f"[WARN] replay_metrics: not recording states for the overlay video: {exc}")
+
     reached, reasons, ended = start, [], "step_cap"
     # Errors at frame 0, before any physics step: catches an object placed inside or above
     # its support (it moves on the first steps) and hands far from their reference.
     record()
+    record_state()
     for _ in range(max_steps):
         before = int(_first(command.timestep))
         with torch.inference_mode():
@@ -255,8 +303,11 @@ def main() -> int:
             break
         reached = int(_first(command.timestep))
         record()
+        record_state()
     steps = len(object_pos) - 1
     t_done = time.time()
+    joint_names = list(robot.joint_names) if robot is not None else []
+    urdf_path = str(getattr(getattr(env_cfg.scene.robot, "spawn", None), "asset_path", "") or "")
     env.close()
 
     span = max(end - start, 1)
@@ -341,6 +392,25 @@ def main() -> int:
         "timing_s": {"setup": round(t_ready - t0, 1), "replay": round(t_done - t_ready, 1)},
     }
     os.makedirs(os.path.dirname(os.path.abspath(args_cli.output)), exist_ok=True)
+    states_out = args_cli.states_out or os.path.join(
+        os.path.dirname(os.path.abspath(args_cli.output)), "replay_states.npz"
+    )
+    if states_out != "none" and states["joint_pos"] and not states_error:
+        np.savez_compressed(
+            states_out,
+            **{key: np.asarray(value) for key, value in states.items()},
+            joint_names=np.asarray(joint_names),
+            urdf_path=np.asarray(urdf_path),
+            motion_dir=np.asarray(str(scene_config.motion_file)),
+            object_mesh_path=np.asarray(_object_mesh_path(str(scene_config.motion_file))),
+            control_dt_s=np.asarray(float(unwrapped.step_dt)),
+            flag=np.asarray(bool(flags)),
+            flag_reasons=np.asarray(json.dumps(flags)),
+        )
+        report["states_file"] = states_out
+    elif states_out != "none":
+        report["states_file"] = None
+        report["states_error"] = states_error or ["no robot states (floating-hand task)"]
     with open(args_cli.output, "w") as f:
         json.dump(report, f, indent=1)
     print("REPLAY_METRICS " + json.dumps({k: report[k] for k in (

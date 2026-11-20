@@ -34,8 +34,12 @@ the speculative containers that `--fast` starts for single-clip latency (each ho
 containers counting against the cap; costs a ~6-17 s cold start per call);
 `hedge_after_s` (0 disables) re-sends a call that has no container yet to a second pool.
 
-`render_every` (default 20; 0: none): which clips get the optional environment video
-(`render_queue`). The batch records the queue; it is drained after delivery, never inline.
+`robot_steps` (default ["retarget", "simulate"]; [] = reconstruct only): run per clip in one
+robotic-grounding GPU container once the reconstruction phase has finished (the clips' run-root
+locks are held by the reconstruction container until then). `simulate` writes each clip's
+physics-QA flag. `render_every` (default 20; 0: none): the optional environment video goes to
+every flagged clip plus a stable 1-in-N sample (`render_queue`); the queue is drained last,
+one clip at a time, after every clip's robot steps (never on a clip's critical path).
 
 Run roots are /e2e/runs/<name>. Paths are as seen inside the control container.
 """
@@ -109,6 +113,22 @@ def render_queue(names: list[str], every: int = RENDER_EVERY, flagged: tuple[str
     return chosen
 
 
+DEFAULT_ROBOT_STEPS = ["retarget", "simulate"]
+
+
+def robot_steps(name: str, manifest: dict) -> list[list[str]]:
+    """run_e2e.sh argvs run in one robotic-grounding (GPU) container per clip after its
+    reconstruction: retarget, then simulate (environment build + physics QA replay).
+    Manifest `robot_steps` ([] = reconstruct only, the round-1 behaviour)."""
+    config = f"{RUNS}/{name}/{CONFIG}"
+    return [["--config", config, step] for step in manifest.get("robot_steps", DEFAULT_ROBOT_STEPS)]
+
+
+def qa_report_path(name: str, embodiment: str = "vega") -> str:
+    """Where `simulate` writes the clip's physics-QA metrics (tools/e2e/stages.py)."""
+    return f"{RUNS}/{name}/simulate/{embodiment}/replay_metrics.json"
+
+
 def render_commands(names: list[str]) -> list[list[str]]:
     """run_e2e.sh argvs that drain a render queue: one GPU, after the clip is delivered
     (needs `retarget` output); never on a clip's critical path."""
@@ -128,8 +148,8 @@ def summarize(results: list[dict]) -> str:
             f"{_mmss(r['start'] - t0):>8s} {_mmss(r['end'] - r['start']):>8s}"
         )
     ok = sum(r["code"] == 0 for r in results)
-    lines.append(f"makespan {_mmss(t1 - t0)} | {ok}/{len(results)} ok | "
-                 f"{ok / max(t1 - t0, 1e-9) * 3600:.1f} clips/h")
+    rate = f"{ok / (t1 - t0) * 3600:.1f} clips/h" if t1 - t0 >= 1 else "clips/h n/a (nothing to run)"
+    lines.append(f"makespan {_mmss(t1 - t0)} | {ok}/{len(results)} ok | {rate}")
     return "\n".join(lines)
 
 

@@ -1007,7 +1007,8 @@ class StageTests(Fixture):
             "inspect": inspect_stages(config),
             "retarget": retarget_stages(config, "both"),
             "simulate": simulate_stages(config, "both"),
-            "render": render_stages(config, "both"),
+            "render": render_stages(config, "both", backend="rtx"),
+            "render-overlay": render_stages(config, "vega"),
             "train-expert": train_expert_stages(
                 config, "both", max_iterations=1, num_envs=1
             ),
@@ -1028,7 +1029,7 @@ class StageTests(Fixture):
 
     def test_render_records_one_finite_video_per_embodiment(self) -> None:
         config = self.make_ready_config()
-        stages = render_stages(config, "both", video_length=50)
+        stages = render_stages(config, "both", video_length=50, backend="rtx")
         self.assertEqual([stage.name for stage in stages], ["render.floating", "render.vega"])
         for stage in stages:
             command = stage.commands[0].argv
@@ -1044,10 +1045,27 @@ class StageTests(Fixture):
             self.assertTrue(command[command.index("--success_marker") + 1].endswith("render.done"))
             self.assertEqual(stage.outputs, (config.run_root / "render" / stage.name.split(".")[1],))
 
+    def test_render_overlay_draws_the_simulate_replay(self) -> None:
+        config = self.make_ready_config()
+        stage = render_stages(config, "vega")[0]
+        command = stage.commands[0].argv
+        self.assertIn("scripts/render_replay_overlay.py", command)
+        self.assertTrue(
+            command[command.index("--states") + 1].endswith("/simulate/vega/replay_states.npz")
+        )
+        self.assertTrue(command[command.index("--output") + 1].endswith("/render/vega/overlay.mp4"))
+        self.assertIn(config.run_root / "simulate" / "vega" / "replay_states.npz", stage.inputs)
+        with self.assertRaises(ConfigError):
+            render_stages(config, "floating")
+        with self.assertRaises(ConfigError):
+            render_stages(config, "vega", backend="raytraced")
+
     def test_render_cli_persists_its_parameters(self) -> None:
         config = self.make_ready_config("render-cli")
         with mock.patch.object(cli.Runner, "run_many", return_value=[]) as run_many:
-            result = cli.main(["render", "--video-length", "40", "--config", str(config.path)])
+            result = cli.main(
+                ["render", "--backend", "rtx", "--video-length", "40", "--config", str(config.path)]
+            )
         self.assertEqual(result, 0)
         stages = run_many.call_args.args[0]
         self.assertEqual([stage.name for stage in stages], ["render.vega"])
@@ -1336,7 +1354,8 @@ Path(args.save_plot_path).write_bytes(b'plot')
             ["inspect"],
             ["retarget", "--embodiment", "both"],
             ["simulate", "--embodiment", "both"],
-            ["render", "--embodiment", "both"],
+            ["render", "--embodiment", "both", "--backend", "rtx"],
+            ["render"],
             ["train-expert", "--embodiment", "both"],
             ["collect"],
             ["finetune"],

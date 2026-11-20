@@ -411,3 +411,21 @@ class RenderQueueTests(unittest.TestCase):
 
     def test_render_commands_target_each_run_root(self):
         self.assertEqual(B.render_commands(["x"]), [["--config", "/e2e/runs/x/e2e_config.json", "render"]])
+
+
+class RobotStepsTests(unittest.TestCase):
+    def test_default_robot_steps_retarget_then_simulate(self):
+        self.assertEqual(B.robot_steps("c1", {}), [
+            ["--config", "/e2e/runs/c1/e2e_config.json", "retarget"],
+            ["--config", "/e2e/runs/c1/e2e_config.json", "simulate"],
+        ])
+
+    def test_robot_steps_can_be_disabled(self):
+        self.assertEqual(B.robot_steps("c1", {"robot_steps": []}), [])
+
+    def test_robot_steps_run_in_the_rg_role(self):
+        for step in B.robot_steps("c1", {}) + B.render_commands(["c1"]):
+            self.assertEqual(C.role_for(step), "rg")
+
+    def test_qa_report_path_matches_the_simulate_stage(self):
+        self.assertEqual(B.qa_report_path("c1"), "/e2e/runs/c1/simulate/vega/replay_metrics.json")

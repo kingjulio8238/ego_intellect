@@ -10,7 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .config import RECONSTRUCTION_BUNDLE_FILES, REPO_ROOT, E2EConfig
+from .config import RECONSTRUCTION_BUNDLE_FILES, REPO_ROOT, ConfigError, E2EConfig
 from .runner import Command, Stage
 
 RECONSTRUCTION_ROOT = REPO_ROOT / "reconstruction"
@@ -641,25 +641,52 @@ def _simulate_task(config: E2EConfig, name: str) -> tuple[str, Path]:
     return "VegaSharpa-WholeBody-Manip-v0", _motion_partition_relative(config.workflow, "vega_sharpa")
 
 
-def render_stages(
-    config: E2EConfig, embodiment: str, *, video_length: int = RENDER_VIDEO_LENGTH
-) -> list[Stage]:
-    """Build the optional "environment on video" visual check (Isaac RTX cameras).
+RENDER_BACKENDS = ("overlay", "rtx")
 
-    Replays the environment with zero actions and the reference-motion markers on, and
-    records one MP4 per embodiment under RUN_ROOT/render/<embodiment>/. Nothing downstream
-    reads it: it is a human check, run on a sample of clips, off the delivery path.
+
+def render_stages(
+    config: E2EConfig,
+    embodiment: str,
+    *,
+    video_length: int = RENDER_VIDEO_LENGTH,
+    backend: str = "overlay",
+) -> list[Stage]:
+    """Build the optional "environment on video" visual check.
+
+    Nothing downstream reads it: a human check on flagged and sampled clips, off the
+    delivery path. One MP4 per embodiment under RUN_ROOT/render/<embodiment>/.
+
+    overlay (default): draws `simulate`'s physics replay (replay_states.npz) with pyrender:
+    robot, object where physics put it, reference ghost, wrist targets, support. No Isaac
+    and no RTX: runs anywhere, Modal included. Vega only; needs `simulate` first.
+    rtx: Isaac RTX cameras (zero-action replay with the reference markers, `video_length`
+    steps). Needs an RTX host whose driver Isaac Sim supports (not Modal).
     """
+    if backend not in RENDER_BACKENDS:
+        raise ConfigError(f"render backend must be one of {RENDER_BACKENDS}, got {backend!r}")
     stages: list[Stage] = []
     for name in _embodiments(embodiment):
         task, motion = _simulate_task(config, name)
         output_host = config.run_root / "render" / name
         output_container = config.container_path("run_root") / "render" / name
-        command = _container_command(
-            config,
-            (
-                *_container_env(config),
-                "python",
+        motion_input = _motion_partition_host(config, motion.name.split("=", 1)[1])
+        if backend == "overlay":
+            if name == "floating":
+                raise ConfigError(
+                    "render --backend overlay needs the physics replay that `simulate` "
+                    "records for the whole-body (vega) task; use --backend rtx for floating"
+                )
+            states = "simulate/" + name + "/replay_states.npz"
+            argv: tuple[str | Path, ...] = (
+                "scripts/render_replay_overlay.py",
+                "--states",
+                config.container_path("run_root") / states,
+                "--output",
+                output_container / "overlay.mp4",
+            )
+            inputs: tuple[Path, ...] = (motion_input, config.run_root / states)
+        else:
+            argv = (
                 "scripts/rsl_rl/dummy_agent.py",
                 "--headless",
                 "--task",
@@ -676,16 +703,20 @@ def render_stages(
                 str(video_length),
                 "--success_marker",
                 output_container / "render.done",
-            ),
-            label=f"render the {name} environment on video",
+            )
+            inputs = (motion_input,)
+        command = _container_command(
+            config,
+            (*_container_env(config), "python", *argv),
+            label=f"render the {name} environment on video ({backend})",
         )
         stages.append(
             Stage(
                 f"render.{name}",
                 (command,),
-                inputs=(_motion_partition_host(config, motion.name.split("=", 1)[1]),),
+                inputs=inputs,
                 outputs=(output_host,),
-                description=f"record the {name} environment on video (visual check)",
+                description=f"record the {name} environment on video ({backend}, visual check)",
             )
         )
     return stages

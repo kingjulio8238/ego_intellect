@@ -214,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render.add_argument("--embodiment", choices=("floating", "vega", "both"))
     render.add_argument("--video-length", type=_positive_int)
+    render.add_argument(
+        "--backend",
+        choices=("overlay", "rtx"),
+        help="overlay (default): pyrender of simulate's physics replay, runs anywhere; "
+        "rtx: Isaac RTX cameras, needs an RTX host with a supported driver",
+    )
 
     train = subparsers.add_parser("train-expert", help="train source RL experts")
     train.add_argument("--embodiment", choices=("floating", "vega", "both"))
@@ -745,14 +751,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args, config, "render", "video_length", default=RENDER_VIDEO_LENGTH
                 )
             )
+            backend = _stage_value(args, config, "render", "backend", default="overlay")
             config = _configure(
                 args,
                 config,
                 "render",
-                {"embodiment": embodiment, "video_length": video_length},
+                {"embodiment": embodiment, "video_length": video_length, "backend": backend},
             )
             _runner(args, config).run_many(
-                render_stages(config, embodiment, video_length=video_length)
+                render_stages(
+                    config, embodiment, video_length=video_length, backend=backend
+                )
             )
         elif args.command == "train-expert":
             embodiment = _stage_value(
