@@ -11,7 +11,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 | 1 | Batch orchestration / GPU scheduling | One GPU wait (up to 15 min) exceeds any stage; dominates throughput and $/environment at scale | **Done (rounds 1–2)**: 2.4–6 → 13.8 clips/h per workspace, $2.76 → $1.01–1.20/clip; sharding across workspaces, preemption-safe |
 | 2 | Render overlay (5.3 min) | Largest unoptimized stage; likely removable from the critical path (optional / async / low-res) | **Done**: 5.3 min → 0 on the critical path; numeric QA in `simulate` (+1 min, same boot); overlay video 20 s after delivery for flagged + 1 in 20 — see below |
 | 3 | Solvability check (new) | Must be cheap by design — the naive version is 13.4 h of RL | **Paused** (2026-11-20): test validated, no cheap proof yet — see below |
-| 4 | Retarget (3.0 min) | Next-largest existing stage | Todo |
+| 4 | Retarget (3.0 min) | Next-largest existing stage | **Done** (Vega): ~3.2 → ~1.3 min (−60%) — see below |
 | 5 | Environment build (2.0 min) | | Todo |
 | 6 | Triage gate (new) | Saves the full per-clip cost of every rejected clip | Todo |
 | 7 | Ingest (1.4 min) | Mostly container-start overhead | Todo |
@@ -332,6 +332,38 @@ then a ~2 min check per clip (needs multi-clip manipulation training and many mo
 clips; ~$50–150 one-time); (c) full recipe on a 1-in-N audit sample, physics QA as the
 per-clip gate. Spend on this stage: ~$5 (julian-41138, sales-32662).
 
+## Retarget (stage 6), 2026-11-20
+
+Vega path, 390-frame clips (b3_tb2, b3_tbseed), Modal L40S. Stage = `retarget.prepare`
+(loader) + `retarget.vega` (`ego_recon_to_dexmate_sharpa.py`) + support surface.
+
+**Profile** (cProfile, stock): 70% Pink IK (395 solves x 100 QP iterations = 39,500 QPs;
+the per-iteration cost is Pink's QP assembly in Python, then DAQP), 22% the verification
+MP4 (649 pyrender frames), the rest imports/IO. The IK's convergence test never passes on
+reconstructed hands (0% of frames converge: MANO-to-robot mismatch leaves ~5 cm on the
+metacarpal targets), so every frame ran the full 100 iterations.
+
+| Step | Stock | Now | How |
+|---|---|---|---|
+| `retarget.prepare` (loader) | 22 s | 22 s | untouched |
+| IK + parquet write | 129–135 s | 50–51 s | `--max_iters 30` (stage constant `VEGA_IK_MAX_ITERS`) |
+| Verification MP4 | ~45 s | 0 on the path (42 s in `render`) | `scripts/retarget/render_vega_retarget_video.py` renders it from the parquet; `render` writes `render/vega/retarget.mp4` next to the overlay |
+| Support surface | 4 s | 4 s | untouched |
+| **Stage** | **~3.2 min** (batch: 3.0–3.5) | **~1.3 min** | **−60%** |
+
+Gate (stock 100 iterations vs 30, same container, both clips):
+- task-space error means unchanged to ≤0.05 mm (wrists 14.8/15.1 mm, fingertips 11.5 mm,
+  metacarpals 49.9 mm), p95 within 0.06 mm, maxima unchanged; orientation within 0.001 rad;
+  no new warnings;
+- joint trajectories: mean |dq| 2.6e-3 rad, p95 9.7e-3 (stock vs stock across containers:
+  1.6e-3 / 5e-3; same container: bitwise equal). The extra difference is null-space posture
+  drift of a 58-DoF arm+hand, not tracking: task errors do not move;
+- physics QA (`replay_metrics.py`): both clips pass in both versions, completion 0.33 vs
+  0.33, every check within 4 mm (largest: wrist p95 30.4 → 34.4 mm, limit 50 mm);
+- the MP4 rendered from the parquet matches the in-process one (same 649 frames, same pose).
+Sweep: 20 iterations also kept task errors but drifted joints further (p95 1.4e-2); 50 gave
+no better agreement than 30. Spend ~$1.5 (julian-41138).
+
 ## Next: todo for the remaining stages (for review)
 
 Same method as reconstruct: profile → isolate each call → smoke levers in parallel against
@@ -374,12 +406,12 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
       the batch defaults; skips QA-flagged clips before Isaac starts).
 - [ ] A cheap proof: not found. Open directions below.
 
-**4. Retarget (3.0 min)**
-- [ ] Profile prepare / load / Vega / Sharpa sub-steps; most of it is probably Isaac/Kit
-      boot and per-frame IK in Python.
-- [ ] Levers: one Kit boot for all embodiments, vectorized IK, run embodiments in
-      parallel, residents for the loader image.
-- [ ] Gate: retargeted joint trajectories within stock run-to-run noise.
+**4. Retarget (3.0 min)** — done for Vega 2026-11-20, see "Retarget" below
+- [x] Profile the Vega sub-steps (cProfile on Modal L40S, 2 clips).
+- [x] IK iterations 100 → 30 (`--max_iters`, set by the stage); verification video moved to
+      `render`. Gate: task-space errors and physics-QA verdicts unchanged.
+- [ ] Not done (out of scope): vectorized/GPU IK, the floating-hand path, `prepare` (22 s,
+      mostly the loader container start).
 
 **5. Environment build (2.0 min)**
 - [ ] Profile asset conversion (mesh → USD, collision decomposition) vs Kit boot.

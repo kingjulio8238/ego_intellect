@@ -171,11 +171,12 @@ Retargeting must produce all of the following beneath the run root:
 - `human_motion_data/ego_recon/processed/sequence_id=<id>/robot_name=vega_sharpa/`;
 - `human_motion_data/ego_recon/reconstructed_stage/<id>_vega_sharpa_support.usda`;
 - `vega_retarget_qa/<id>_vega_sharpa_report.json`;
-- `vega_retarget_qa/<id>_vega_sharpa_ik.npz`; and
-- `vega_retarget_qa/<id>_vega_sharpa.mp4`.
+- `vega_retarget_qa/<id>_vega_sharpa_ik.npz`.
 
-The report, Parquet motion, and video must have consistent robot/object frame counts, finite
-values, the released 58-joint order, and no unresolved QA warnings. Inspect the beginning,
+The verification video is rendered from the written Parquet by the optional `render` stage
+(`render/vega/retarget.mp4`, next to the physics overlay), off the retarget critical path.
+The report and Parquet motion must have consistent robot/object frame counts, finite values,
+the released 58-joint order, and no unresolved QA warnings. Inspect the beginning,
 interaction, and final frames of the video.
 
 ![Side-by-side reconstructed human and Vega Sharpa motion retargeting](figures/e2e_workflow/vega_retargeting.webp)

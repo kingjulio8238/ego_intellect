@@ -360,6 +360,9 @@ def _embodiments(value: str) -> tuple[str, ...]:
     return (value,)
 
 
+VEGA_IK_MAX_ITERS = 30  # IK iterations per frame for the Vega retarget (script default 100)
+
+
 def retarget_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
     """Build retargeting stages for the selected embodiment."""
     selected = _embodiments(embodiment)
@@ -531,7 +534,13 @@ def retarget_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
             "--artifact_dir",
             config.container_path("run_root") / "vega_retarget_qa",
             "--save",
-            "--video",
+            # The IK never meets its convergence tolerance on reconstructed hands (0% of
+            # frames converge), so every frame ran the full 100 iterations. 30 leaves the
+            # task-space errors unchanged (docs/pipeline/OPTIMIZATION.md, retarget).
+            "--max_iters",
+            str(VEGA_IK_MAX_ITERS),
+            # No --video: the verification MP4 (~45 s) is rendered by `render` from the
+            # written parquet, off the critical path (render/vega/retarget.mp4).
         ]
         commands.append(
             Stage(
@@ -734,7 +743,8 @@ def render_stages(
     """Build the optional "environment on video" visual check.
 
     Nothing downstream reads it: a human check on flagged and sampled clips, off the
-    delivery path. One MP4 per embodiment under RUN_ROOT/render/<embodiment>/.
+    delivery path. MP4s per embodiment under RUN_ROOT/render/<embodiment>/; for Vega also
+    retarget.mp4, the retarget verification video (kinematics only, from the parquet).
 
     overlay (default): draws `simulate`'s physics replay (replay_states.npz) with pyrender:
     robot, object where physics put it, reference ghost, wrist targets, support. No Isaac
@@ -785,15 +795,35 @@ def render_stages(
                 output_container / "render.done",
             )
             inputs = (motion_input,)
-        command = _container_command(
-            config,
-            (*_container_env(config), "python", *argv),
-            label=f"render the {name} environment on video ({backend})",
-        )
+        commands = [
+            _container_command(
+                config,
+                (*_container_env(config), "python", *argv),
+                label=f"render the {name} environment on video ({backend})",
+            )
+        ]
+        if name == "vega":
+            # The retarget verification video (robot + object kinematics, no physics),
+            # moved here from `retarget` so it is off the critical path.
+            commands.append(
+                _container_command(
+                    config,
+                    (
+                        *_container_env(config),
+                        "python",
+                        "scripts/retarget/render_vega_retarget_video.py",
+                        "--motion_dir",
+                        config.container_path("human_motion_data") / motion,
+                        "--output",
+                        output_container / "retarget.mp4",
+                    ),
+                    label="render the Vega retarget verification video",
+                )
+            )
         stages.append(
             Stage(
                 f"render.{name}",
-                (command,),
+                tuple(commands),
                 inputs=inputs,
                 outputs=(output_host,),
                 description=f"record the {name} environment on video ({backend}, visual check)",

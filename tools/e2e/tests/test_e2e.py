@@ -927,6 +927,8 @@ class StageTests(Fixture):
         self.assertNotIn("--mano_model_dir", vega_command)
         self.assertIn("PYTHONUNBUFFERED=1", vega_command)
         self.assertIn("PYTHONFAULTHANDLER=1", vega_command)
+        self.assertNotIn("--video", vega_command)  # rendered by `render`, off the critical path
+        self.assertEqual(vega_command[vega_command.index("--max_iters") + 1], "30")
 
     def test_vega_retarget_publishes_canonical_partition_and_support_surface(
         self,
@@ -1057,6 +1059,11 @@ class StageTests(Fixture):
         )
         self.assertTrue(command[command.index("--output") + 1].endswith("/render/vega/overlay.mp4"))
         self.assertIn(config.run_root / "simulate" / "vega" / "replay_states.npz", stage.inputs)
+        retarget_video = stage.commands[1].argv
+        self.assertIn("scripts/retarget/render_vega_retarget_video.py", retarget_video)
+        self.assertTrue(
+            retarget_video[retarget_video.index("--output") + 1].endswith("/render/vega/retarget.mp4")
+        )
         with self.assertRaises(ConfigError):
             render_stages(config, "floating")
         with self.assertRaises(ConfigError):
