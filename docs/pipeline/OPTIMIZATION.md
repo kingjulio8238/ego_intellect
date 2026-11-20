@@ -257,6 +257,28 @@ box moving away from the resting physics box before the grasp and the hands not 
 box: these fast-pipeline reconstructions (SAM3D mesh, no cleaned scan) look worse than the
 reviewed clip, but no human has reviewed them yet, so whether this is a real defect or limits that are too tight is open.
 
+**Re-calibration (2026-11-20, after review).** Watched side by side with tissue_box_simple, the
+two flagged clips were judged fine, so the limits were too tight. Changes: the wrist-drift
+check measures drift from the median wrist position in each contact segment (contact onset is
+where reconstructions are noisiest; measured from the first frame it charged good clips for
+that frame), and the limits moved to cover the three reviewed-good clips:
+
+| Check | Limit (was) | tissue_box_simple | b3_tbseed | b3_tb2 | +4 cm | −2 cm | +5 cm x | 0.5 s late |
+|---|---|---|---|---|---|---|---|---|
+| Object error, first 0.5 s, max | 2.5 cm (1.5) | 0.64 | 1.32 | 1.57 | **3.7** | **4.3** | **7.1** | 0.68 |
+| Object error before contact, p95 | 6.5 cm (3.5) | 2.4 | 5.2 | 4.8 | 5.5 | 4.1 | **6.8** | 2.7 |
+| Object error, first 1 s of contact, p95 | 7.5 cm (4.5) | 3.1 | 5.9 | 5.9 | 6.1 | — | — | 2.5 |
+| Wrist error, p95 | 5 cm | 3.4 | 3.0 | 3.0 | 3.2 | 3.4 | 3.9 | 3.9 |
+| Wrist drift in object frame (median), p95 | 4.1 cm (3.5, from first frame) | 1.5 | 3.6 | 3.7 | 1.5 | 1.5 | 1.6 | **4.6** |
+| Replay ends before first contact | — | no | no | no | no | **yes** | **yes** | no |
+| **Flag** | | no | no | no | **yes** | **yes** | **yes** | **yes** |
+
+7/7 correct. Placement defects keep wide margins (settle 1.6 cm worst good vs 3.7 cm best
+defect, plus the early end). The timing defect is caught with a thin one: drift 3.7 cm worst
+good vs 4.6 cm for a 0.5 s lag (about 0.4–0.5 cm each side of the limit); a smaller lag would
+pass. The before-contact and grasp object errors are now loose backstops: real
+reconstructions drift up to ~5 cm before contact and still look right.
+
 Limits: the robot phase starts after every clip's reconstruction (the reconstruction container
 holds all the clips' run-root locks until it ends); per-clip hand-off is a follow-up. The
 `rtx` backend was not re-run (same command as before, refused on Modal).
@@ -311,8 +333,10 @@ recorded inputs → gate against stock → one e2e. Ordered by the ranking above
       Modal; every synthetic defect visible; compared with the RTX clip.
 - [x] F. Batches run retarget → simulate per clip, gate on the QA flag, drain the render
       queue last; verified on 2 clips. (E, per-clip RTX, not planned: internal QA only.)
-- [ ] Follow-ups: review the 2 flagged fast-pipeline clips (real defect or limits too
-      tight?) and re-calibrate on reviewed clips; per-clip hand-off from reconstruction to
+- [x] Reviewed the 2 flagged fast-pipeline clips (fine) and re-calibrated: 3 good clips
+      pass, 4 defects flagged.
+- [ ] Follow-ups: grow the reviewed set (real bad clips especially; the timing check's
+      margin is thin); per-clip hand-off from reconstruction to
       the robot phase; floating-hand QA/overlay; RTX profile only if demos need it.
 
 **3. Solvability check (new)**

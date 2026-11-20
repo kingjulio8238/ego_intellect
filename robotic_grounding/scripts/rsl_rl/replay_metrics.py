@@ -40,19 +40,23 @@ if hasattr(sys.stdout, "reconfigure"):
 # hands reach and touch the object; it follows the reference), and the robot's own wrist
 # tracking. Completion (open-loop hold) is reported, not flagged.
 #
-# Flag thresholds, calibrated 2026-11-20 on tissue_box (reviewed good; two runs agree to
-# 0.2 mm) and controlled defects of it: object raised 4 cm, lowered 2 cm, shifted 5 cm,
-# and played 0.5 s behind the hands. Values (good / defect) and margins are recorded in
-# docs/pipeline/OPTIMIZATION.md in the monorepo. One reviewed clip is a thin baseline:
-# re-calibrate as reviewed clips accumulate. The environment's own terminations (object
-# 0.10 m / 0.5 rad, wrist 0.15 m) are RL-episode limits and much looser.
+# Flag thresholds, calibrated 2026-11-20 on three clips judged good on review
+# (tissue_box_simple, and the fast-pipeline tissue_box clips b3_tbseed and b3_tb2) and four
+# controlled defects of tissue_box_simple: object raised 4 cm, lowered 2 cm, shifted 5 cm,
+# and played 0.5 s behind the hands. Every good clip passes and every defect is flagged;
+# values and margins are in docs/pipeline/OPTIMIZATION.md in the monorepo. The settle check
+# and the replay ending before contact catch placement defects with wide margins; the
+# grasp-drift check catches the timing defect with a thin one. Re-calibrate as reviewed
+# clips accumulate. The rest and grasp object errors are loose backstops: real
+# reconstructions drift up to ~5 cm before contact and still look right. The environment's
+# own terminations (object 0.10 m / 0.5 rad, wrist 0.15 m) are RL-episode limits.
 DEFAULT_THRESHOLDS = {
-    "settle_object_pos_max_m": 0.015,
-    "rest_object_pos_p95_m": 0.035,
+    "settle_object_pos_max_m": 0.025,
+    "rest_object_pos_p95_m": 0.065,
     "grasp_missed_contact_mean": 0.5,
-    "grasp_object_pos_p95_m": 0.045,
+    "grasp_object_pos_p95_m": 0.075,
     "wrist_pos_p95_m": 0.05,
-    "grasp_drift_p95_m": 0.035,
+    "grasp_drift_p95_m": 0.041,
 }
 SETTLE_WINDOW_S = 0.5  # the object's first moments on its support: floats, sinks, overlaps
 GRASP_WINDOW_S = 1.0  # reference-contact time after the first contact that is checked

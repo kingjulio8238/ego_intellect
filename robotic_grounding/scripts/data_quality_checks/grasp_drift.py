@@ -3,21 +3,25 @@
 """Reject sequences whose hands slide over the object while the reference says they hold it.
 
 During a rigid grasp each wrist is fixed in the object's frame. For every contact segment
-(``hand_contact_active``) this takes the wrist position in the object frame at the segment's
-first frame and measures how far it moves for the rest of the segment. A large drift means
+(``hand_contact_active``) this takes the wrist position in the object frame and measures how
+far it strays from its median over the segment (the median, not the first frame: contact
+onset is where reconstructions are noisiest, so a first-frame reference charges a good clip
+for its first frame's error). A large drift means
 the hand and object trajectories disagree in time or space (e.g. the object lags the hands),
 which a reviewer sees in the environment video as markers that do not move together.
 
 score = 95th-percentile drift in metres over both hands' contact frames.
-Calibrated 2026-11-20 on tissue_box: good clip 0.023 m; object 0.5 s behind the hands
-0.050 m (see docs/pipeline/OPTIMIZATION.md in the monorepo).
+Calibrated 2026-11-20 on three clips judged good on review (tissue_box_simple 0.015 m,
+fast-pipeline tissue_box b3_tbseed 0.036 m, b3_tb2 0.037 m) and the object played 0.5 s
+behind the hands (0.046 m). The margins are thin (about 0.4 cm on each side); see
+docs/pipeline/OPTIMIZATION.md in the monorepo.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-THRESHOLD_M = 0.035
+THRESHOLD_M = 0.041
 
 
 def _rotate_inverse(wxyz: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -42,7 +46,8 @@ def grasp_drift(data: dict) -> dict:
         if frames.size:
             local = _rotate_inverse(obj_wxyz, ee[:, side, :3] - obj_pos)
             for segment in np.split(frames, np.flatnonzero(np.diff(frames) > 1) + 1):
-                side_drift += np.linalg.norm(local[segment] - local[segment[0]], axis=1).tolist()
+                center = np.median(local[segment], axis=0)
+                side_drift += np.linalg.norm(local[segment] - center, axis=1).tolist()
         per_hand.append(round(float(np.percentile(side_drift, 95)), 4) if side_drift else None)
         drifts += side_drift
     p95 = float(np.percentile(drifts, 95)) if drifts else None
