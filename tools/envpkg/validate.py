@@ -293,6 +293,8 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
 
     if manifest["task"] is not None:
         _check_task(root, manifest, listed, report)
+    if "isaaclab" in manifest["simulators"]:
+        _check_isaaclab(root, manifest, listed, report)
 
     provenance = manifest["provenance"]
     if manifest["task"] is None:
@@ -380,3 +382,72 @@ def _check_task(root: Path, manifest: dict[str, Any], listed: dict[str, Any], re
         stored = part["reference_check"]
         if (check["success"], check["steps"]) != (stored["success"], stored["steps"]):
             err(f"{label}: reference_check {stored} disagrees with the recomputed {check}")
+
+
+def _check_isaaclab(root: Path, manifest: dict[str, Any], listed: dict[str, Any], report: Report) -> None:
+    """isaaclab_env/v1: schema; the exported motion is the core motion (asset paths aside);
+    the support USDA states the same disks as support_surfaces.json; object files are the
+    core object's; the task id matches the task spec."""
+    from .build import parse_support_usda
+    from .common import ISAACLAB_SCHEMA
+    from .isaaclab import HMD, PATH_FIELDS, partition
+
+    err = report.errors.append
+    entry = manifest["simulators"]["isaaclab"]
+    if entry["schema"] != ISAACLAB_SCHEMA or entry["env"] not in listed:
+        err(f"simulators.isaaclab: {entry} is not an {ISAACLAB_SCHEMA} package file")
+        return
+    env = json.loads((root / entry["env"]).read_text())
+    errors = schema_errors(ISAACLAB_SCHEMA, env)
+    if errors:
+        report.errors += errors
+        return
+    task = json.loads((root / manifest["task"]["spec"]).read_text()) if manifest["task"] else {"robots": {}}
+    obj = manifest["core"]["object"]
+    for name in (obj["mesh"], obj["urdf"], *obj["materials"], *obj["textures"]):
+        copy = f"{HMD}/ego_recon/processed/{PurePosixPath(name).name}"
+        if copy not in listed or listed[copy]["sha256"] != listed[name]["sha256"]:
+            err(f"isaaclab: {copy} is not a copy of {name}")
+    for robot, part in env["robots"].items():
+        label = f"isaaclab.robots.{robot}"
+        if robot not in manifest["robots"]:
+            err(f"{label}: robot not in the package")
+            continue
+        entry_robot = manifest["robots"][robot]
+        if part["motion_file"] != str(partition(manifest["sequence_id"], robot)):
+            err(f"{label}: motion_file {part['motion_file']} is not this clip's partition")
+        for key in ("motion", "support_usda", "object_urdf", "env_spec"):
+            if part[key] not in listed:
+                err(f"{label}: {key} {part[key]} is not a package file")
+        if report.errors:
+            continue
+        if part["robot_description_sha256"] != entry_robot["model"]["sha256"]:
+            err(f"{label}: robot description hash differs from robots.{robot}.model")
+        task_part = task["robots"].get(robot)
+        if task_part is None or task_part["isaaclab_task"] != part["task"] or task_part["env_spec"] != part["env_spec"]:
+            err(f"{label}: task {part['task']} / env_spec do not match the task spec")
+        exported, core = _row(root / part["motion"]), _row(root / entry_robot["motion"]["path"])
+        differing = sorted(k for k in core if k not in PATH_FIELDS and _differs(core[k], exported.get(k)))
+        if differing or set(core) != set(exported):
+            err(f"{label}: exported motion differs from the core motion in {differing or 'columns'}")
+        surfaces = json.loads((root / entry_robot["support_surfaces"]).read_text())
+        try:
+            parsed = parse_support_usda(root / part["support_usda"], robot)
+        except Exception as exc:  # noqa: BLE001
+            err(f"{label}: support USDA unreadable ({exc})")
+            continue
+        if parsed["surfaces"] != surfaces["surfaces"]:
+            err(f"{label}: support USDA states different disks than {entry_robot['support_surfaces']}")
+        qa = entry_robot["qa"]
+        if qa["physics_replay"] and part["expected_replay"] is not None:
+            replay = json.loads((root / qa["physics_replay"]).read_text())
+            if (replay["flag"], replay["completion"]) != (part["expected_replay"]["flag"], part["expected_replay"]["completion"]):
+                err(f"{label}: expected_replay differs from {qa['physics_replay']}")
+
+
+def _differs(a: Any, b: Any) -> bool:
+    if isinstance(a, float) and isinstance(b, float):
+        return not (a == b or (np.isnan(a) and np.isnan(b)))
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) != len(b) or any(_differs(x, y) for x, y in zip(a, b))
+    return a != b

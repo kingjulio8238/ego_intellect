@@ -21,7 +21,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 8 | Render overlay (visual check) | `render` (overlay of the physics replay; flagged + 1 in 20, after delivery) | **Optimized** | 0 on the path (was 5.3 min); 20 s per rendered clip |
 | 9 | Solvability check (replaces 13.4 h RL as our QA) | `solvability` (experimental) | **Paused**: test validated, no cheap proof yet ([OPTIMIZATION.md](OPTIMIZATION.md)) | — |
 | 10 | Task / reward spec | package builder (`task/task.json`), from `simulate`'s `env_spec.json` | **Built** (C): `task_spec/v1`: rewards, terminations, action, observations, resets, assist, physics, train/eval episodes, `lift_hold` success checked on the reference ([TASK_SPEC.md](TASK_SPEC.md)) | seconds (CPU) |
-| 11 | Export / package (Isaac Lab + MuJoCo) | `python3 -m tools.envpkg build / validate` | **Contract built** (A): `env_package/v1` core + validator ([ENV_PACKAGE.md](ENV_PACKAGE.md)); simulator exporters next (D, E) | seconds (core) |
+| 11 | Export / package (Isaac Lab + MuJoCo) | `python3 -m tools.envpkg build / validate` | **Contract + Isaac Lab export built** (A, D): `env_package/v1` core + validator ([ENV_PACKAGE.md](ENV_PACKAGE.md)); `isaaclab/` proven in a fresh Isaac Lab process ([ISAACLAB_EXPORT.md](ISAACLAB_EXPORT.md)); MuJoCo next (E) | seconds (core) |
 | 12 | Delivery to lab | — | **To add** | — |
 
 ## Ours, not per clip
@@ -54,7 +54,7 @@ Decided: build before more speed work; package for Isaac Lab and MuJoCo. In depe
 | A | Package contract + vendor intake spec (stages 1, 11) | **Done**: `tools/envpkg`, [ENV_PACKAGE.md](ENV_PACKAGE.md), [INTAKE.md](INTAKE.md) |
 | B | Triage gate + reconstruction QA thresholds (stages 3, 5) | **Done**: `tools/gates`, [GATES.md](GATES.md); calibrated 52/52 (recon) and 32/32 (triage) |
 | C | Task/reward spec per clip (stage 10), written into `manifest.task` | **Done**: `tools/envpkg/task.py`, [TASK_SPEC.md](TASK_SPEC.md) |
-| D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | Todo |
+| D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | **Done**: `tools/envpkg/isaaclab.py` + `isaaclab_check.py`, [ISAACLAB_EXPORT.md](ISAACLAB_EXPORT.md) |
 | E | MuJoCo exporter (`mujoco/`, starting from `robotic_grounding/flash_chord`), second physics check | Todo |
 | F | Delivery: archive, lab-side verify, `run_e2e.sh export` / `deliver` gated on QA | Todo |
 | G | One end-to-end run on a fresh workspace (founders-78536), with cold setup measured | Todo |

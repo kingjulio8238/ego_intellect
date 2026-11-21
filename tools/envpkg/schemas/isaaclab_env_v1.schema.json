@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "isaaclab_env/v1",
+  "title": "Isaac Lab export (isaaclab_env/v1)",
+  "description": "isaaclab/env.json in an environment package. Contract: docs/pipeline/ISAACLAB_EXPORT.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "human_motion_data_dir", "extension", "robots"],
+  "properties": {
+    "schema": {"const": "isaaclab_env/v1"},
+    "human_motion_data_dir": {"const": "isaaclab/human_motion_data"},
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repository_path", "revision", "note"],
+      "properties": {
+        "name": {"const": "robotic_grounding"},
+        "repository_path": {"type": "string"},
+        "revision": {"type": ["string", "null"]},
+        "note": {"type": "string"}
+      }
+    },
+    "robots": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task", "motion_file", "motion", "support_usda", "object_urdf", "robot_description_sha256",
+                     "env_spec", "expected_replay", "commands"],
+        "properties": {
+          "task": {"type": "string", "minLength": 1},
+          "motion_file": {"type": "string", "pattern": "^ego_recon/processed/sequence_id=[^/]+/robot_name=[^/]+$"},
+          "motion": {"type": "string"},
+          "support_usda": {"type": "string"},
+          "object_urdf": {"type": "string"},
+          "robot_description_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "env_spec": {"type": "string"},
+          "expected_replay": {
+            "oneOf": [
+              {"type": "null"},
+              {"type": "object", "required": ["flag", "completion", "checks"],
+               "properties": {"flag": {"type": "boolean"}, "completion": {"type": "number"}, "checks": {"type": "object"}}}
+            ]
+          },
+          "commands": {
+            "type": "object",
+            "required": ["replay_check", "train", "play"],
+            "additionalProperties": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

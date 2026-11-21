@@ -303,6 +303,52 @@ class PackageTest(unittest.TestCase):
                                             task_profile=self.profile))["robots"]["vega_sharpa"]
         self.assertIn("capped at 100 steps", part["notes"][0])
 
+    def test_isaaclab_export(self) -> None:
+        package = self.build(provenance=True)
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(manifest["simulators"]["isaaclab"], {"env": "isaaclab/env.json", "schema": "isaaclab_env/v1"})
+        env = json.loads((package / "isaaclab/env.json").read_text())
+        part = env["robots"]["vega_sharpa"]
+        self.assertEqual(part["motion_file"], f"ego_recon/processed/sequence_id={SEQ}/robot_name=vega_sharpa")
+        self.assertEqual(part["task"], "VegaSharpa-WholeBody-Manip-v0")
+        hmd = package / "isaaclab/human_motion_data"
+        motion = pq.read_table(hmd / part["motion_file"] / "data.parquet").to_pylist()[0]
+        self.assertEqual(motion["object_urdf_paths"], ["ego_recon/processed/box.urdf"])
+        for name in ("box.urdf", "box.obj", "box.mtl", "box_0.png"):  # found by name beside the motion
+            self.assertTrue((hmd / "ego_recon/processed" / name).is_file(), name)
+        support = parse_support_usda(hmd / f"ego_recon/reconstructed_stage/{SEQ}_vega_sharpa_support.usda", "vega_sharpa")
+        self.assertEqual(support, json.loads((package / "robots/vega_sharpa/support_surfaces.json").read_text()))
+        self.assertTrue(validate_package(package, strict=True).ok)
+
+        usda = hmd / f"ego_recon/reconstructed_stage/{SEQ}_vega_sharpa_support.usda"
+        usda.write_text(usda.read_text().replace("double radius = 0.17", "double radius = 0.2"))
+        rehash(package)
+        self.assertRejected(package, "support USDA states different disks")
+
+    def test_isaaclab_export_motion_must_be_the_core_motion(self) -> None:
+        package = self.build()
+        path = package / f"isaaclab/human_motion_data/ego_recon/processed/sequence_id={SEQ}/robot_name=vega_sharpa/data.parquet"
+        joints = (np.asarray(pq.read_table(path).to_pylist()[0]["robot_joint_positions"]) + 0.01).tolist()
+        rewrite_row(path, robot_joint_positions=joints)
+        rehash(package)
+        self.assertRejected(package, "exported motion differs from the core motion in ['robot_joint_positions']")
+
+    def test_isaaclab_check_comparisons(self) -> None:
+        from tools.envpkg.isaaclab_check import compare_env, compare_replay
+
+        spec = env_spec(121, 3)
+        moved = json.loads(json.dumps(spec))
+        moved["robot"]["spawn"]["asset_path"] = "/elsewhere/vega_sharpa_reduced.urdf"  # paths do not count
+        self.assertEqual(compare_env(spec, moved), [])
+        moved["rewards"]["force_closure"]["weight"] = 1.0
+        moved["runtime"]["action_dim"] = 4
+        self.assertEqual(len(compare_env(spec, moved)), 2)
+        expected = {"flag": False, "completion": 0.33, "checks": {"settle_object_pos_max_m": 0.013, "grasp_missed_contact_mean": 0.0}}
+        same = {"flag": False, "completion": 0.335, "checks": {"settle_object_pos_max_m": 0.0145, "grasp_missed_contact_mean": 0.02}}
+        self.assertEqual(compare_replay(expected, same), [])
+        off = {"flag": True, "flag_reasons": ["settle"], "completion": 0.2, "checks": {"settle_object_pos_max_m": 0.04}}
+        self.assertEqual(len(compare_replay(expected, off)), 4)
+
     def test_task_spec_refusals(self) -> None:
         run = make_run_root(self.tmp / "flat", lift_m=0.0)
         with self.assertRaisesRegex(ContractError, "reference motion itself fails the lift_hold"):
@@ -344,6 +390,9 @@ class PackageTest(unittest.TestCase):
         with open(package / "core/object/box.obj", "a") as stream:
             stream.write("# edited\n")
         self.assertRejected(package, "box.obj: ")
+        rehash(package)  # hashes fixed, but the Isaac Lab copy of the mesh no longer matches
+        self.assertRejected(package, "processed/box.obj is not a copy of core/object/box.obj")
+        shutil.copy(package / "core/object/box.obj", package / "isaaclab/human_motion_data/ego_recon/processed/box.obj")
         rehash(package)
         self.assertTrue(validate_package(package).ok)
         (package / "core/object/stray.txt").write_text("x")

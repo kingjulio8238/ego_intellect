@@ -516,6 +516,13 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
         "qa": {"verdict": verdict, "reasons": reasons, "gates": gates},
         "files": [],
     }
+    if task_entry is not None:
+        from .isaaclab import export_isaaclab
+
+        revision = provenance["stages"].get("simulate", {}).get("revision") or provenance["builder"]["revision"]
+        manifest["simulators"]["isaaclab"] = export_isaaclab(staging, manifest, extension_revision=revision)
+    else:
+        print("warning: no Isaac Lab export (it needs the task spec)", file=sys.stderr)
     files = sorted(p for p in staging.rglob("*") if p.is_file())
     manifest["files"] = [
         {"path": p.relative_to(staging).as_posix(), "bytes": p.stat().st_size, "sha256": sha256_file(p)} for p in files

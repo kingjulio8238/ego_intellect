@@ -23,7 +23,7 @@ qa/<robot>/physics_replay.json        physics QA replay report (v2d_replay_metri
 qa/triage.json, qa/reconstruction.json   gate reports (GATES.md)
 task/task.json                        task_spec/v1: rewards, terminations, success (TASK_SPEC.md)
 task/<robot>/isaaclab_env_spec.json   the resolved Isaac Lab training environment it was built from
-isaaclab/                             added by the Isaac Lab exporter (build step D)
+isaaclab/                             Isaac Lab export: env.json + the extension's dataset layout (ISAACLAB_EXPORT.md)
 mujoco/                               added by the MuJoCo exporter (build step E)
 ```
 
@@ -43,7 +43,7 @@ absolute paths, no `..`, and no symlinks.
 | `core.object.physics` | Mass, centre of mass, inertia, friction. Each value carries its source: `mass_source` is `default_constant` (0.3 kg for every object today), `estimated` or `measured`. Friction is `physx_default` (0.5 / 0.5, restitution 0): the values the physics QA replay ran with |
 | `robots.<robot>` | Robot model id plus the sha256 of its description file; frame; motion (rate, frames, joints); support surfaces; retarget report; QA status (`pass` / `flagged` / `not_run`), flag reasons, completion |
 | `task` | `{"spec": "task/task.json", "schema": "task_spec/v1"}`, or `null` when the clip has no resolved training environment yet ([TASK_SPEC.md](TASK_SPEC.md)) |
-| `simulators` | `{}` until the exporters add `isaaclab` / `mujoco` |
+| `simulators` | `{"isaaclab": {"env": "isaaclab/env.json", "schema": "isaaclab_env/v1"}}` once a task spec exists; `mujoco` follows |
 | `qa.verdict` | `flagged` if any robot's replay flagged, `incomplete` if any did not run, else `pass` |
 | `files` | Every file except `manifest.json`, with byte size and sha256 |
 

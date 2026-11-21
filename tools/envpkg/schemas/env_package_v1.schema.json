@@ -461,6 +461,22 @@
           "isaaclab",
           "mujoco"
         ]
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "env",
+          "schema"
+        ],
+        "properties": {
+          "env": {
+            "$ref": "#/$defs/path"
+          },
+          "schema": {
+            "type": "string"
+          }
+        }
       }
     },
     "qa": {
