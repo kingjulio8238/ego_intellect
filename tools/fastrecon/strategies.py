@@ -135,6 +135,32 @@ STRATEGIES: list[Strategy] = [
              note="launch-bound step loop: faster host CPU + GPU"),
     Strategy("P-gsplat-fast", *GS, patch={**GS_FAST, "profile": True}, tag="profile", time_factor=1.2),
     Strategy("P-sam3d-fast", "v2d_sam3d", "lib.image_to_mesh", patch={"profile": True}, tag="profile", time_factor=1.2),
+    # R4 (reconstruct round 2, 2026-11-21). B: the object branch starts on a reference-frame-only
+    # SAM2 call; its 3 masks must be byte-identical to the full propagation's frame 0.
+    Strategy("R4B-sam2-ref-frame-only", "v2d_sam2", "lib.video_to_masks",
+             patch={"add": ["--ref_frame_only"]}, tag="a", time_factor=0.3,
+             note="expect identical=3 (masks/{1,2,3}/000000.png), the other frames missing"),
+    # D: repeated grid scales reuse their score (exact): expect R3-fp-scale-fast-resident's diff.
+    Strategy("R4D-fp-scale-reuse-resident", "v2d_foundation_pose", "estimate_mesh_scale",
+             patch={"env": FP_ENV, "resident": True}, tag="a", time_factor=0.7),
+    # C: fewer gsplat epochs (changes the optimisation; judged by tools.fastrecon.variance
+    # against V-gsplat-fast-1..3, kept on the same volume).
+    Strategy("R4C-gsplat-ep8", *GS, patch={**GS_FAST, "set": {**GS_FAST["set"], "--n_epochs": "8"}, "keep": True},
+             tag="c", time_factor=0.8),
+    Strategy("R4C-gsplat-ep6", *GS, patch={**GS_FAST, "set": {**GS_FAST["set"], "--n_epochs": "6"}, "keep": True},
+             tag="c", time_factor=0.6),
+    # E: SAM3D seeded (library default 42; the pipeline passed none, so every run differed),
+    # fewer diffusion steps, scatter-average texture baking. Resident, as in a run.
+    Strategy("R4E-sam3d-seed42-resident", "v2d_sam3d", "lib.image_to_mesh",
+             patch={"set": {"--seed": "42"}, "resident": True}, tag="c", time_factor=0.7),
+    Strategy("R4E-sam3d-seed42-repeat-resident", "v2d_sam3d", "lib.image_to_mesh",
+             patch={"set": {"--seed": "42"}, "resident": True}, tag="c", time_factor=0.7,
+             note="must reproduce R4E-sam3d-seed42-resident's diff exactly"),
+    Strategy("R4E-sam3d-seed42-steps12-resident", "v2d_sam3d", "lib.image_to_mesh",
+             patch={"set": {"--seed": "42", "--stage1_inference_steps": "12", "--stage2_inference_steps": "12"},
+                    "resident": True}, tag="c", time_factor=0.6),
+    Strategy("R4E-sam3d-seed42-fastbake-resident", "v2d_sam3d", "lib.image_to_mesh",
+             patch={"set": {"--seed": "42", "--texture_bake_mode": "fast"}, "resident": True}, tag="c", time_factor=0.5),
     # E. environment checks: does a call reproduce stock3 on this workspace's images?
     Strategy("E-hamer-hands-repeat", "v2d_hamer", "lib.masks_to_hands", tag="a"),
     Strategy("E-hamer-align-repeat", "v2d_hamer", "lib.align_hands", tag="a"),

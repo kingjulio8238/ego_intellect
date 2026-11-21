@@ -676,15 +676,23 @@ class FoundationPoseTracker:
         log_lo = np.log(lo)
         log_hi = np.log(hi)
         best_scale = float(np.sqrt(lo * hi))  # geometric midpoint as initial guess
+        # Each level's grid repeats some of the previous level's scales bit for bit (its centre
+        # and every other point inside the old range: ~11 of 36 registrations at 9x4). A
+        # registration is a deterministic function of the mesh scale and the frame, so a
+        # repeated scale reuses its score; the winner and its tie-breaking are unchanged.
+        scored: dict[float, float] = {}
 
         for level in range(n_levels):
             scales = np.exp(np.linspace(log_lo, log_hi, n_samples))
             best_score = -np.inf
 
             for scale in scales:
-                self.rescale_to(scale)
-                pose = self.register(rgb, depth, mask, intrinsics, iteration=registration_iterations)
-                score = self._score_scale(depth, mask, intrinsics, pose, iou_weight, depth_weight, chamfer_weight)
+                score = scored.get(float(scale))
+                if score is None:
+                    self.rescale_to(scale)
+                    pose = self.register(rgb, depth, mask, intrinsics, iteration=registration_iterations)
+                    score = self._score_scale(depth, mask, intrinsics, pose, iou_weight, depth_weight, chamfer_weight)
+                    scored[float(scale)] = score
                 logger.debug(f"  scale={scale:.4f}  score={score:.4f}")
                 if score > best_score:
                     best_score = score

@@ -17,7 +17,7 @@ be cut. Quality bar for every change: outputs within the stock pipeline's own ru
 | 7 | Ingest (1.4 min) | Mostly container-start overhead | Todo |
 | 8 | Setup | One-time per workspace; cold image loads 5–10 min per module on a new workspace | Todo |
 | 9 | Task/reward spec, export, delivery (new) | Small; build correct first, then fast | Todo |
-| 10 | Reconstruct, remaining | gsplat backward (~100 s, launch-bound); seed SAM3D (50 s; needs approval: changes stock) | Mostly done |
+| 10 | Reconstruct, round 2 | Object-chain overhead, early object branch, scale-search reuse, SAM3D seed + fast bake | **Done**: ~9:45 → 7:10 (−26%), gate PASS — see below; gsplat epochs rejected |
 
 ## Done: reconstruct (2026-11-18)
 
@@ -393,6 +393,39 @@ Also fixed: `replay_metrics.py` exited 0 when it crashed (Kit's launcher swallow
 exception), so a broken QA replay looked like a pass with a missing report. It now exits 1.
 Cost: robotic_grounding edits add the ~1 min warm-up step to the image rebuild.
 Spend ~$1.5 (julian-41138).
+
+## Reconstruct round 2 (stage 4), 2026-11-21
+
+`reconstruct --fast`, single clip (latency mode), tissue_box seeded with the stock
+calibration: **~9:45 → 7:10** (final2 with its 15-min GPU wait removed → r4_tbseed,
+newacc, L40S). Gate vs stock3: **PASS**, with more margin than b5 (hand rotation 0.16° vs
+0.25°, tolerance 0.35°; object surface 8.2 vs 10.4 mm, tolerance 13.2 mm).
+
+Before, the critical path was the object chain (SAM2 → SAM3D → FoundationPose scale → tracking
+→ gsplat): ~7:10 of model compute plus ~2:35 of overhead.
+
+| Item | Change | Evidence | Cut on the path |
+|---|---|---|---|
+| A. Overhead | Worker returns outputs ≤32 MB and its log inline: the parent no longer reads them back from the volume (gsplat pull 12.7 → 0.6 s, tracking 5.3 → 0.2 s); a push commits only when it copied or deleted a file (each commit ~1.5 s); nested mounts are walked once; files this process has seen skip the volume existence check; the log goes to the caller after the sync lock is released, in one message; the resident-hint write runs in the background | object-chain push+pull+gaps ~65 s → ~12 s (journals, final2 vs r4) | ~45–55 s |
+| B. Early object branch | SAM3D and the scale search read only the reference frame's object mask: a reference-frame-only SAM2 call (`--ref_frame_only`, 7 s) starts them while the full propagation runs; tracking waits for the full masks, and the two reference masks must be byte-identical (checked every run; it raises otherwise) | replay R4B: the 3 reference masks identical; r4: SAM3D started at 61 s (now waiting on MoGe) instead of after the full SAM2 at 88 s | ~25–30 s |
+| C. gsplat | **Rejected.** 8 and 6 epochs (of 10) cut the loop 20–40%, but move refined hands 6× beyond run-to-run spread (hand rotation 0.35° / 0.68° vs 0.06°; the gate allows 0.35° in total) | `tools.fastrecon.variance` on R4C-gsplat-ep8/ep6 vs V-gsplat-fast-1..3 | 0 |
+| D. FoundationPose scale | Each level's grid repeats some of the previous level's scales bit for bit; those reuse their score (registration is deterministic): ~11 of 36 registrations skipped | replay R4D: 59.8 → 38.9 s resident, outputs identical to the stock-code replay | ~20 s |
+| E. SAM3D | Seeded (the library's own default, 42; the pipeline passed none, so every run gave a different mesh) and scatter-average texture baking instead of 2500 Adam steps. 12+12 diffusion steps (of 25+25) were outside the noise floor: rejected | replay R4E: 51.1 → 35.9 s; transform identical to the seeded default bake; texture within the unseeded spread; two seeded runs give the same transform | ~15 s |
+
+r4_tbseed per call (s from stage start): SAM3D 61→108, scale 110→187, tracking 188→229;
+hands SAM2 43→88, HaMeR 88→166, align 166→213, interpolate 213→248; gsplat 249→429.
+**The hand branch is now the critical path** (interpolation ends 19 s after tracking).
+
+Not engaged in r4 (next): the FoundationPose and gsplat residents were skipped by the GPU
+ledger (7/9 and 9/9 held: idle scaledown containers of DINO, MoGe, both SAM2s and DROID count
+for 120 s), so the scale search ran cold (66 s vs 39 s resident) and gsplat waited 19 s for
+a container plus 8 s prefetch; `tracks_interpolate` spent 22 s prefetching 1,951 small files
+(32 threads, volume first-read latency). Shorter scaledown for one-shot images and more
+prefetch threads are the next overhead cuts.
+
+Production batch mode keeps residents and warm-ups off; A, B, D and E apply there too.
+Replays: `tools/fastrecon/strategies.py` R4*. Spend ~$3.3 (newacc: replays $1.1, one e2e
+$1.6 incl. a full image rebuild).
 
 ## Next: todo for the remaining stages (for review)
 

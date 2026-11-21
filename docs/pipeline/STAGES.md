@@ -14,7 +14,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 1 | Vendor intake spec (format, intrinsics/IMU, metadata) | — | **To add** | — |
 | 2 | Ingest | `init` (+ per-clip `setup --skip-reconstruction`) | Optimized in batch mode | 7–26 s |
 | 3 | Triage gate (reject bad clips before GPU spend) | — | **To add** | — |
-| 4 | Reconstruct (hands, object, camera bundle) | `reconstruct --fast` | **Optimized** (−73%; −79% vs stock re-run) | 9.75 min |
+| 4 | Reconstruct (hands, object, camera bundle) | `reconstruct --fast` | **Optimized** (round 2: −26%, gate PASS; −80% vs stock e2e) | ~7.2 min (was 9.75) |
 | 5 | Reconstruction QA (pass/fail thresholds) | `inspect` | Exists; needs thresholds | 0.1 min |
 | 6 | Retarget (robot-agnostic human-hand motion + robot retargets) | `retarget` | **Optimized** (Vega; −60%): IK 100 → 30 iterations, verification video moved to `render` | ~1.3 min (was 3.0–3.5) |
 | 7 | Environment build + physics QA replay (assets, collision, support surfaces; numeric flags) | `simulate` | **Optimized** (−50%): CPU physics for the replay, Isaac caches baked into the image | ~0.5–0.6 min (was ~1.1) |

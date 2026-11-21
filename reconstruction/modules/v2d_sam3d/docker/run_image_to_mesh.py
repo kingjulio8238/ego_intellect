@@ -18,6 +18,8 @@ def run_image_to_mesh(
     with_layout_postprocess: bool = False,
     use_vertex_color: bool = True,
     stage1_inference_steps: int = None,
+    stage2_inference_steps: int = None,
+    texture_bake_mode: str = "opt",
     depth_path: str = None,
     depth_intrinsics_path: str = None,
     depth_mask_path: str = None,
@@ -51,6 +53,8 @@ def run_image_to_mesh(
             "with_layout_postprocess": with_layout_postprocess,
             "use_vertex_color": use_vertex_color,
             "stage1_inference_steps": stage1_inference_steps,
+            "stage2_inference_steps": stage2_inference_steps,
+            "texture_bake_mode": None if texture_bake_mode == "opt" else texture_bake_mode,
         },
         dev=dev,
         modules_dir=MODULES_DIR,
@@ -76,6 +80,9 @@ if __name__ == "__main__":
     parser.add_argument("--with_layout_postprocess", action="store_true", help="Enable layout postprocessing")
     parser.add_argument("--use_vertex_color", action="store_true", default=True, help="Use vertex color")
     parser.add_argument("--stage1_inference_steps", type=int, default=None, help="Stage 1 inference steps")
+    parser.add_argument("--stage2_inference_steps", type=int, default=None, help="Stage 2 (SLAT) inference steps")
+    parser.add_argument("--texture_bake_mode", type=str, default="opt", choices=["opt", "fast"],
+                        help="Texture baking: optimised (opt) or scatter-average (fast)")
     parser.add_argument("--depth_path", type=str, default=None, help="Depth PNG to ground the generation in scene scale")
     parser.add_argument("--depth_intrinsics_path", type=str, default=None, help="Camera intrinsics JSON matching the depth image")
     parser.add_argument("--depth_mask_path", type=str, default=None, help="Optional mask PNG to zero out background depth pixels")
@@ -92,6 +99,8 @@ if __name__ == "__main__":
         with_layout_postprocess=args.with_layout_postprocess,
         use_vertex_color=args.use_vertex_color,
         stage1_inference_steps=args.stage1_inference_steps,
+        stage2_inference_steps=args.stage2_inference_steps,
+        texture_bake_mode=args.texture_bake_mode,
         depth_path=args.depth_path,
         depth_intrinsics_path=args.depth_intrinsics_path,
         depth_mask_path=args.depth_mask_path,

@@ -154,6 +154,10 @@ class Mirror:
         self.roots: dict[str, bool] = {}  # partitioned mode: root -> shared (merge on save)
         self.dirty: set[str] = set()  # partitioned mode: roots whose entries changed since save
         self._legacy: dict[str, list[int]] | None = None
+        # Local paths whose mirror this process has seen or written (checkout, push, pull).
+        # A push skips the volume existence check for them: it is a network round trip per
+        # file, and a payload pull (no volume reload) would otherwise see a stale view.
+        self.verified: set[str] = set()
 
     # -- index persistence ------------------------------------------------------------
     def partition_file(self, root: str) -> str:
@@ -233,7 +237,9 @@ class Mirror:
 
         def push_one(path: str):
             key = _stat_key(path)
-            if self.index.get(path) == key and os.path.lexists(mirror_path(self.mirror_root, path)):
+            if self.index.get(path) == key and (
+                path in self.verified or os.path.lexists(mirror_path(self.mirror_root, path))
+            ):
                 return None  # unchanged
             _copy_file(path, mirror_path(self.mirror_root, path))
             return key
@@ -245,8 +251,10 @@ class Mirror:
                 stats.errors.append(f"{path}: {error}")
             elif key is None:
                 stats.skipped += 1
+                self.verified.add(path)
             else:
                 self.index[path] = key
+                self.verified.add(path)
                 self._mark(path)
                 stats.copied += 1
                 stats.bytes += key[0]
@@ -261,6 +269,7 @@ class Mirror:
                 except OSError as exc:
                     stats.errors.append(f"{target}: {exc}")
                 self.index.pop(path, None)
+                self.verified.discard(path)
                 self._mark(path)
         return stats
 
@@ -292,20 +301,44 @@ class Mirror:
                 continue
             path, key = result
             self.index[path] = key
+            self.verified.add(path)
             self._mark(path)
             stats.copied += 1
             stats.bytes += key[0]
         return stats
 
-    def pull_changes(self, changed: list[str], deleted: list[str], dirs: list[str]) -> SyncStats:
-        """Apply a worker's reported mirror changes to local disk."""
+    def pull_changes(
+        self,
+        changed: list[str],
+        deleted: list[str],
+        dirs: list[str],
+        payload: dict[str, tuple[bytes, int]] | None = None,
+    ) -> SyncStats:
+        """Apply a worker's reported mirror changes to local disk.
+
+        ``payload`` (mirrored path -> (content, mtime_ns)): files the worker returned inline.
+        They are written from memory with the worker's mtime instead of being read back from
+        the volume, where each freshly committed small file costs a round trip (~0.25 s; 1561
+        gsplat outputs took 12 s). Same bytes, same mtime as a volume copy (copy2).
+        """
         stats = SyncStats()
+        payload = payload or {}
         for mirrored in dirs:
             os.makedirs(local_path(self.mirror_root, mirrored), exist_ok=True)
             stats.dirs += 1
         def pull_one(mirrored: str):
             path = local_path(self.mirror_root, mirrored)
-            _copy_file(mirrored, path)
+            inline = payload.get(mirrored)
+            if inline is None:
+                _copy_file(mirrored, path)
+            else:
+                content, mtime_ns = inline
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                tmp = f"{path}.v2d-tmp"
+                with open(tmp, "wb") as stream:
+                    stream.write(content)
+                os.utime(tmp, ns=(mtime_ns, mtime_ns))
+                os.replace(tmp, path)
             return path, _stat_key(path)
 
         for mirrored, result, error in _parallel(pull_one, changed):
@@ -314,6 +347,7 @@ class Mirror:
                 continue
             path, key = result
             self.index[path] = key
+            self.verified.add(path)
             self._mark(path)
             stats.copied += 1
             stats.bytes += key[0]
@@ -326,8 +360,38 @@ class Mirror:
             except OSError as exc:
                 stats.errors.append(f"{path}: {exc}")
             self.index.pop(path, None)
+            self.verified.discard(path)
             self._mark(path)
         return stats
+
+
+def read_payload(changed: list[str], max_bytes: int, max_files: int = 20000) -> dict[str, tuple[bytes, int]]:
+    """Worker side: the changed regular files as {path: (content, mtime_ns)}, or {} when they
+    exceed the limits (the caller then copies them from the volume as before)."""
+    if not changed or len(changed) > max_files:
+        return {}
+    sizes = {}
+    for path in changed:
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            return {}
+        if not os.path.isfile(path) or os.path.islink(path):
+            return {}
+        sizes[path] = (st.st_size, st.st_mtime_ns)
+    if sum(size for size, _ in sizes.values()) > max_bytes:
+        return {}
+
+    def read(path: str):
+        with open(path, "rb") as stream:
+            return path, stream.read()
+
+    out: dict[str, tuple[bytes, int]] = {}
+    for path, result, error in _parallel(read, changed):
+        if error is not None:
+            return {}
+        out[path] = (result[1], sizes[path][1])
+    return out
 
 
 def snapshot(roots: list[str]) -> tuple[dict[str, tuple[int, int]], set[str]]:

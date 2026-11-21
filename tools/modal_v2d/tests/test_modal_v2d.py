@@ -340,7 +340,63 @@ class ParentWorkerRoundTripTests(unittest.TestCase):
             self.assertNotIn("/etc/passwd", by_dst)
             self.assertIn("model.bin", "".join(emitted))  # remote log streamed back
             self.assertGreaterEqual(state_volume.commits, 2)
-            self.assertGreaterEqual(state_volume.reloads, 2)
+            # Outputs and log came back inline: only the worker reloaded the volume.
+            self.assertEqual(state_volume.reloads, 1)
+
+    def test_large_outputs_and_unchanged_inputs(self) -> None:
+        """Outputs above the payload limit are read from the volume (after a reload); a call
+        whose inputs are already mirrored does not commit; nested mounts are walked once."""
+        from unittest import mock
+
+        from tools.modal_v2d import runtime, worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(os.path.realpath(tmp))
+            vol, weights, repo = root / "vol", root / "weights", root / "repo"
+            for path in (vol, weights, repo):
+                path.mkdir(parents=True)
+            run_dir = root / "e2e" / "runs" / "a" / "reconstruction"
+            (run_dir / "masks").mkdir(parents=True)
+            (run_dir / "input.txt").write_text("frames")
+            (run_dir / "masks" / "m.png").write_text("mask")
+            patches = {
+                "STATE_MOUNT": str(vol),
+                "WEIGHTS_MOUNT": str(weights),
+                "MIRROR_ROOT": str(vol / "fs"),
+                "INDEX_PATH": str(vol / "index.json"),
+                "CALL_LOG_ROOT": str(vol / "calls"),
+                "REPO_ROOT": str(repo),
+                "PAYLOAD_MAX_BYTES": 0,
+            }
+            state_volume, weights_volume = FakeVolume(), FakeVolume()
+            dst, masks_dst = root / "c" / "data" / "out", root / "c" / "data" / "masks"
+
+            def remote(spec: dict) -> dict:
+                return worker.execute(spec, state_volume=state_volume, weights_volume=weights_volume)
+
+            fake_function = mock.Mock()
+            fake_function.remote.side_effect = remote
+            spec = {
+                "image": "v2d_moge",
+                "argv": ["sh", "-c", "cat input.txt > result.txt"],
+                "env": {},
+                "workdir": str(dst),
+                "mounts": [{"src": str(run_dir), "dst": str(dst)}, {"src": str(run_dir / "masks"), "dst": str(masks_dst)}],
+                "gpu": True,
+            }
+            emitted: list[str] = []
+            with mock.patch.multiple(config, **patches):
+                state = runtime.StateSync(state_volume, weights_volume)
+                with mock.patch.object(state.mirror, "push", wraps=state.mirror.push) as push:
+                    self.assertEqual(state.run_remote(spec, {"v2d_moge": fake_function}, emitted.append), 0)
+                    self.assertEqual([c.args[0] for c in push.call_args_list], [str(run_dir)])  # masks/ covered
+                self.assertEqual((run_dir / "result.txt").read_text(), "frames")
+                self.assertEqual(state_volume.reloads, 2)  # worker + parent (outputs not inline)
+                commits = state_volume.commits
+                spec2 = {**spec, "argv": ["sh", "-c", "true"]}
+                self.assertEqual(state.run_remote(spec2, {"v2d_moge": fake_function}, emitted.append), 0)
+                # Second call: nothing to push, so the parent did not commit (the worker did).
+                self.assertEqual(state_volume.commits, commits + 1)
 
     def test_weight_downloads_route_to_cpu_twin(self) -> None:
         from unittest import mock

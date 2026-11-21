@@ -249,6 +249,9 @@ def execute(spec: dict, *, state_volume, weights_volume, progress_store=None, re
         _ext_cache_out(ext_cache)
         _inductor_cache_out(inductor_cache)
     changed, deleted, new_dirs = sync.diff(before, sync.snapshot(mirrored_roots))
+    # Small outputs travel back inline (sync.read_payload): the caller then skips reading
+    # them back from the volume one round trip per file.
+    payload = sync.read_payload(changed, C.PAYLOAD_MAX_BYTES) if C.PAYLOAD_MAX_BYTES > 0 else {}
     diffed = time.time()
     state_volume.commit()
     try:
@@ -274,6 +277,7 @@ def execute(spec: dict, *, state_volume, weights_volume, progress_store=None, re
         "diff_s": round(diffed - exec_finished, 3),
         "commit_s": round(time.time() - diffed, 3),
         "changed_files": len(changed),
+        "payload_files": len(payload),
         "container_age_s": age_at_entry,
         "gpu_sm": _gpu_sm(),  # which GPU type ran it (hedges may run on another)
         **({"resident": True, "preload_s": resident.preload_s, "resident_wait_s": resident.wait_s} if resident else {}),
@@ -286,12 +290,21 @@ def execute(spec: dict, *, state_volume, weights_volume, progress_store=None, re
         f"in {progress.hms(elapsed)}; {len(changed)} changed, {len(deleted)} deleted files",
         flush=True,
     )
+    log_text = None
+    try:
+        if os.path.getsize(log_path) <= C.PAYLOAD_MAX_BYTES:
+            with open(log_path, encoding="utf-8", errors="replace") as stream:
+                log_text = stream.read()
+    except OSError:
+        pass
     return {
         "returncode": returncode,
         "changed": changed,
         "deleted": deleted,
         "dirs": new_dirs,
+        "payload": payload,
         "log": log_path,
+        "log_text": log_text,
         "elapsed_s": elapsed,
         "timing": timing,
     }

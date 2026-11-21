@@ -41,6 +41,27 @@ try:
 except Exception as _e:
     print(f"Warning: could not patch render_frames backend: {_e}")
 
+def _set_texture_bake_mode(mode: str) -> None:
+    """Texture baking in to_glb: "opt" (upstream default: 2500 Adam steps over 100 rendered
+    views) or "fast" (upstream's scatter-average of the same views, then inpainting)."""
+    if mode not in ("opt", "fast"):
+        raise ValueError(f"texture_bake_mode must be 'opt' or 'fast', got {mode!r}")
+    from sam3d_objects.model.backbone.tdfy_dit.utils import postprocessing_utils as _pp
+
+    original = getattr(_pp, "_v2d_original_bake_texture", None)
+    if original is None:
+        original = _pp._v2d_original_bake_texture = _pp.bake_texture
+    if mode == "opt":
+        _pp.bake_texture = original
+        return
+
+    def _bake_fast(*args, **kwargs):
+        kwargs["mode"] = "fast"
+        return original(*args, **kwargs)
+
+    _pp.bake_texture = _bake_fast
+
+
 def _pipeline_key(weights_dir: str) -> tuple:
     return ("sam3d.pipeline", os.path.abspath(weights_dir), os.environ.get("HF_HOME"))
 
@@ -204,6 +225,8 @@ def image_to_mesh(image_path: str, mask_path: str, mesh_path: str, transform_pat
                  with_layout_postprocess: bool = False,
                  use_vertex_color: bool = True,
                  stage1_inference_steps: int = None,
+                 stage2_inference_steps: int = None,
+                 texture_bake_mode: str = "opt",
                  depth_path: str = None,
                  depth_intrinsics_path: str = None,
                  depth_mask_path: str = None,
@@ -234,6 +257,7 @@ def image_to_mesh(image_path: str, mask_path: str, mesh_path: str, transform_pat
         output_intrinsics_override = depth_intrinsics
 
     pipeline = _get_pipeline(weights_dir)
+    _set_texture_bake_mode(texture_bake_mode)
     output = pipeline.run(
         image_rgba,
         None,
@@ -244,6 +268,7 @@ def image_to_mesh(image_path: str, mask_path: str, mesh_path: str, transform_pat
         with_layout_postprocess=with_layout_postprocess,
         use_vertex_color=use_vertex_color,
         stage1_inference_steps=stage1_inference_steps,
+        stage2_inference_steps=stage2_inference_steps,
         pointmap=pointmap,
     )
 
@@ -289,6 +314,9 @@ if __name__ == "__main__":
     parser.add_argument("--with_layout_postprocess", action="store_true", help="Enable layout postprocessing")
     parser.add_argument("--use_vertex_color", action="store_true", default=True, help="Use vertex color")
     parser.add_argument("--stage1_inference_steps", type=int, default=None, help="Stage 1 inference steps")
+    parser.add_argument("--stage2_inference_steps", type=int, default=None, help="Stage 2 (SLAT) inference steps")
+    parser.add_argument("--texture_bake_mode", type=str, default="opt", choices=["opt", "fast"],
+                        help="Texture baking: optimised (opt) or scatter-average (fast)")
     parser.add_argument("--depth_path", type=str, default=None, help="Depth PNG to ground the generation in scene scale")
     parser.add_argument("--depth_intrinsics_path", type=str, default=None, help="Camera intrinsics JSON matching the depth image")
     parser.add_argument("--depth_mask_path", type=str, default=None, help="Optional mask PNG to zero out background depth pixels")
@@ -310,6 +338,8 @@ if __name__ == "__main__":
         with_layout_postprocess=args.with_layout_postprocess,
         use_vertex_color=args.use_vertex_color,
         stage1_inference_steps=args.stage1_inference_steps,
+        stage2_inference_steps=args.stage2_inference_steps,
+        texture_bake_mode=args.texture_bake_mode,
         depth_path=args.depth_path,
         depth_intrinsics_path=args.depth_intrinsics_path,
         depth_mask_path=args.depth_mask_path,

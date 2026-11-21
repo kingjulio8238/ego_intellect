@@ -26,6 +26,9 @@ INDEX_PATH = "/vol/.v2d_sync_index.json"
 INDEX_PARTITION_DIR = "/vol/.v2d_sync_index"  # one index file per synced root
 CALL_LOG_ROOT = "/vol/calls"
 PROGRESS_ROOT = "/vol/progress"  # one JSONL journal per invocation
+# A module call's changed files come back inline in its result when they total at most this
+# (sync.read_payload); larger outputs (MoGe depth, ~190 MB) are read from the volume. 0 = off.
+PAYLOAD_MAX_BYTES = int(os.environ.get("V2D_MODAL_PAYLOAD_MAX_MB", "32")) << 20
 
 # --- Paths inside the control and robotic-grounding containers ------------------------
 REPO_ROOT = "/workspace/video_to_data"  # same path the robotic-grounding image uses
@@ -159,13 +162,17 @@ RESIDENT_CLAIM_S = int(os.environ.get("V2D_MODAL_RESIDENT_CLAIM_S", "45"))
 # Only critical-path calls that measurably gain get a resident container (each one holds a
 # GPU while it waits). fastrecon R3 smokes (preload untimed): WiLoR ref 17.0->2.4 s, DINO
 # 10.8->4.5 s, SAM3D 92.9->62.3 s, FoundationPose scale 75.9->59.8 s, tracking 44.5->31.8 s.
-# SAM2 (model loads in ~3 s) and gsplat (nothing to preload beyond imports) showed no gain.
+# SAM2 (model loads in ~3 s) showed no gain. gsplat's preload is only imports, but in a run
+# its container start (5-43 s, plus copying the torch extension and inductor caches, up to
+# 39 s of worker overhead in h3) sits on the critical path after FoundationPose tracking; a
+# resident container does all of that while FoundationPose runs.
 RESIDENT_MODULES = frozenset({
     "v2d.wilor.lib.video_to_hands",
     "v2d.grounding_dino.lib.image_to_object_bboxes",
     "v2d.sam3d.lib.image_to_mesh",
     "v2d.foundation_pose.lib.run_estimate_mesh_scale",
     "v2d.foundation_pose.lib.run_video_to_poses",
+    "v2d.gsplat_refinement.lib.refine_simple",
 })
 
 

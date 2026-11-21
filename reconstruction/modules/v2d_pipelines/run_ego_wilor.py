@@ -98,6 +98,7 @@ Run from reconstruction/.
 
 from concurrent.futures import ThreadPoolExecutor
 import argparse
+import filecmp
 import glob
 import json
 import math
@@ -105,6 +106,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 
 import numpy as np
 import trimesh
@@ -737,6 +739,7 @@ def run_ego_wilor(
     hand_tracks        = f"{output_dir}/hand_tracks.json"
     object_track       = f"{output_dir}/object_track.json"
     masks_dir          = f"{output_dir}/masks"
+    masks_ref_dir      = f"{output_dir}/masks_ref"  # --fast: reference-frame-only SAM2 call
     masks_refined_dir  = f"{output_dir}/masks_refined"
     masks_refined_overlay = f"{output_dir}/masks_refined_overlay.mp4"
     prompts_overlay    = f"{output_dir}/prompts_overlay.png"
@@ -809,7 +812,7 @@ def run_ego_wilor(
 
     # --fast runs independent module calls concurrently (each call is its own container);
     # _later() starts one, _join() waits for it and re-raises its error. Serial otherwise.
-    _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fast") if fast else None
+    _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="fast") if fast else None
     if fast:
         # Module-side switches, each verified output-identical by a fastrecon replay smoke:
         # MoGe decode/write overlap, FoundationPose sequential frame decode, exact hull-based
@@ -1137,15 +1140,49 @@ def run_ego_wilor(
         _has_files(os.path.join(masks_dir, d))
         for d in (os.listdir(masks_dir) if os.path.isdir(masks_dir) else [])
     )
+    # --fast: SAM3D and the FoundationPose scale search read only the reference frame's
+    # object mask, so the object branch starts from a reference-frame-only SAM2 call
+    # (masks_ref/) while the full propagation runs; tracking, which reads every frame, waits
+    # for the full masks, and the two reference masks must be byte-identical.
+    early_object = (fast and object_prompt is not None and object_mesh_path is None
+                    and object_track_id is not None and not sam2_done)
+    ref_obj_mask_full = (f"{masks_dir}/{object_track_id}/{reference_frame:06d}.png"
+                         if object_track_id is not None else None)
+    ref_obj_mask = (f"{masks_ref_dir}/{object_track_id}/{reference_frame:06d}.png"
+                    if early_object else ref_obj_mask_full)
+    sam2_full_done = threading.Event()
+
+    def _sam2_ref() -> None:
+        if not _step("SAM2 reference-frame masks", os.path.exists(ref_obj_mask)):
+            run_video_to_masks(
+                video_path     = video_path,
+                prompts_path   = sam2_prompts,
+                masks_dir      = masks_ref_dir,
+                weights_dir    = sam2_weights,
+                dev            = dev,
+                ref_frame_only = True,
+            )
+
+    def _sam2_full() -> None:
+        try:
+            if not _step("SAM2 mask propagation", sam2_done):
+                run_video_to_masks(
+                    video_path  = video_path,
+                    prompts_path= sam2_prompts,
+                    masks_dir   = masks_dir,
+                    weights_dir = sam2_weights,
+                    dev         = dev,
+                )
+        finally:
+            sam2_full_done.set()  # the object branch checks the masks exist; never wait forever
+
+    if early_object:
+        if rebuilt_sam2_prompts and os.path.isdir(masks_ref_dir):
+            shutil.rmtree(masks_ref_dir)  # masks of earlier prompts
+        _later("sam2_ref", _sam2_ref)
     _warm("v2d_hamer")
-    if not _step("SAM2 mask propagation", sam2_done):
-        run_video_to_masks(
-            video_path  = video_path,
-            prompts_path= sam2_prompts,
-            masks_dir   = masks_dir,
-            weights_dir = sam2_weights,
-            dev         = dev,
-        )
+    if not early_object:
+        _sam2_full()  # early_object: after the object branch has started (step 8)
 
     # 7. Verification renders ------------------------------------------------
     with open(hand_tracks) as f:
@@ -1163,13 +1200,31 @@ def run_ego_wilor(
         )
 
     # 8. Object branch: mesh source + FoundationPose -------------------------
-    _join("depth")  # SAM3D / FoundationPose / HaMeR alignment read depth
+    if not early_object:
+        _join("depth")  # SAM3D / FoundationPose / HaMeR alignment read depth
+
+    def _await_full_masks() -> None:
+        """early_object: tracking reads every frame's mask; wait for the full propagation and
+        check its reference mask is the one SAM3D and the scale search used."""
+        if not early_object:
+            return
+        sam2_full_done.wait()
+        if not os.path.exists(ref_obj_mask_full):
+            raise RuntimeError(f"SAM2 propagation produced no reference mask ({ref_obj_mask_full})")
+        if not filecmp.cmp(ref_obj_mask, ref_obj_mask_full, shallow=False):
+            raise RuntimeError(
+                f"reference-frame object mask from the early SAM2 call ({ref_obj_mask}) differs "
+                f"from the full propagation's ({ref_obj_mask_full}); the object branch would "
+                "mix inputs. Rerun without --fast."
+            )
+        print(f"  [fast] reference-frame object mask identical to the full propagation's")
 
     def _object_branch() -> None:
         nonlocal object_mesh_for_pipeline
         _warm("v2d_foundation_pose", delay_s=30)  # FoundationPose follows SAM3D (~100 s)
+        if early_object:
+            _join("depth", "sam2_ref")  # SAM3D reads the reference depth and object mask
         if object_prompt is not None:
-            ref_obj_mask = f"{masks_dir}/{object_track_id}/{reference_frame:06d}.png"
             if object_mesh_path is not None:
                 print("  [skip] SAM3D mesh generation (using provided OBJ)")
                 if skip_object_scale_estimation:
@@ -1212,6 +1267,11 @@ def run_ego_wilor(
                         depth_intrinsics_path = intrinsics_stable,
                         depth_mask_path       = ref_obj_mask,
                         dev                   = dev,
+                        # --fast: seeded (the library's own default seed; unseeded, every run
+                        # gave a different mesh) and scatter-average texture baking instead of
+                        # 2500 Adam steps (fastrecon R4E: 51 -> 36 s, transform identical to the
+                        # seeded opt bake, texture within the unseeded run-to-run spread).
+                        **({"seed": 42, "texture_bake_mode": "fast"} if fast else {}),
                     )
 
                 if not _step("Apply SAM3D transform", os.path.exists(mesh_pretransformed)):
@@ -1225,6 +1285,7 @@ def run_ego_wilor(
                     # One container for scale search + tracking (same functions and files;
                     # saves a round trip and a FoundationPose import on the critical path).
                     _step("FoundationPose scale estimation + tracking (one call)", False)
+                    _await_full_masks()
                     run_scale_then_track(
                         mesh_path               = mesh_pretransformed,
                         rgb_path                = ref_rgb,
@@ -1272,6 +1333,7 @@ def run_ego_wilor(
                     )
                 object_mesh_for_pipeline = mesh_scaled
 
+            _await_full_masks()
             if not _step("FoundationPose tracking", _has_files(poses_dir)):
                 run_video_to_poses(
                     video_path             = video_path,
@@ -1317,6 +1379,9 @@ def run_ego_wilor(
         _later("object", _object_branch)
     else:
         _object_branch()
+    if early_object:
+        _sam2_full()  # the hand branch below and FoundationPose tracking read every frame's masks
+        _join("depth")
 
     # Downstream object overlays/refinement use the object mask from masks/.
     object_masks_dir = (

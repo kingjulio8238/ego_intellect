@@ -71,8 +71,14 @@ def video_to_masks(
     masks_dir: str,
     weights_dir: str,
     mask_extension: str = "",
+    ref_frame_only: bool = False,
 ):
     """Process a video with SAM2 prompts and save masks to files.
+
+    ``ref_frame_only``: write only the prompt frame's masks (no propagation). They are the
+    same tensors a full run yields for that frame (the stored conditioning outputs, upsampled
+    in the same per-batch call), so the reconstruction can start the object branch on the
+    reference-frame mask while the full propagation runs.
 
     Per object id, the writer location is `<masks_dir>/<obj_id><mask_extension>`.
     Default `mask_extension=""` writes a PNG directory; `".h5"` writes a single
@@ -118,8 +124,12 @@ def video_to_masks(
                 box=box,
             )
 
-        for reverse in [True, False]:
-            for frame_idx, object_ids, masks in predictor.propagate_in_video(inference_state, reverse=reverse):
+        # ref_frame_only: one forward step from the earliest prompt frame = that frame only.
+        passes = [(False, 0)] if ref_frame_only else [(True, None), (False, None)]
+        for reverse, max_frames in passes:
+            for frame_idx, object_ids, masks in predictor.propagate_in_video(
+                inference_state, max_frame_num_to_track=max_frames, reverse=reverse
+            ):
                 for i, obj_id in enumerate(object_ids):
                     mask_data = (masks[i, 0] > 0.0).cpu().numpy().astype(np.uint8) * 255
                     obj_frames.setdefault(obj_id, {})[frame_idx] = mask_data
@@ -139,6 +149,9 @@ if __name__ == "__main__":
     parser.add_argument("--prompts_path", type=str, required=True, help="Path to prompts JSON file")
     parser.add_argument("--masks_dir", type=str, required=True, help="Output directory for masks")
     parser.add_argument("--weights_dir", type=str, required=True, help="Path to SAM2 weights directory")
+    parser.add_argument("--ref_frame_only", action="store_true",
+                        help="Only write the prompt frame's masks (no propagation)")
 
     args = parser.parse_args()
-    video_to_masks(args.video_path, args.prompts_path, args.masks_dir, args.weights_dir)
+    video_to_masks(args.video_path, args.prompts_path, args.masks_dir, args.weights_dir,
+                   ref_frame_only=args.ref_frame_only)

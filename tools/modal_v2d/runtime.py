@@ -426,11 +426,14 @@ class StateSync:
             raise RuntimeError(f"no Modal function for image {image!r}")
         repo_root = os.path.realpath(C.REPO_ROOT)
         remote_mounts = []
-        push_bytes = push_files = 0
+        push_bytes = push_files = push_deleted = 0
         call_t0 = time.time()
         self.lock.acquire()
         held = True
+        lock_wait_s = time.time() - call_t0
+        log_path = None
         try:
+            to_push: list[str] = []
             for mount in spec["mounts"]:
                 if mount.get("mode") == "anonymous" or mounts.skipped(mount["dst"]):
                     continue  # anonymous volumes; desktop-only mounts (passwd, X11, ssh, Kit caches)
@@ -444,20 +447,34 @@ class StateSync:
                 elif image in C.IMAGES_WITH_REPO and C.under(src, repo_root):
                     entry["src"] = os.path.normpath(os.path.join(C.REPO_ROOT, os.path.relpath(src, repo_root)))
                 elif os.path.lexists(src):
-                    stats = self.mirror.push(src)
-                    stats.raise_errors(f"sync of {src}")
-                    push_bytes += stats.bytes
-                    push_files += stats.copied
+                    to_push.append(src)
                     entry["src"] = sync.mirror_path(C.MIRROR_ROOT, src)
                     entry["mirrored"] = True
-                    emit(f"[v2d-modal] synced {src} -> volume: {stats.summary()}\n")
                 else:
                     raise FileNotFoundError(f"bind-mount source does not exist: {src}")
                 remote_mounts.append(entry)
+            # A mount inside another mount of the same call is covered by the outer push (same
+            # files, same deletions); walking it again only re-stats thousands of files.
+            for src in sorted(set(to_push), key=len):
+                covering = next((root for root in to_push if root != src and C.under(src, root)), None)
+                if covering is not None:
+                    continue
+                stats = self.mirror.push(src)
+                stats.raise_errors(f"sync of {src}")
+                push_bytes += stats.bytes
+                push_files += stats.copied
+                push_deleted += stats.deleted
+                emit(f"[v2d-modal] synced {src} -> volume: {stats.summary()}\n")
             self.mirror.save()
-            # The control container writes /weights only when bootstrap placed MANO; workers
+            # Workers see a pushed file only after a commit (~1.5 s); a call whose inputs are
+            # all on the volume already needs none (the index files written by save() are only
+            # read by later invocations, and the next commit or checkin carries them). The
+            # control container writes /weights only when bootstrap placed MANO; workers
             # reload /weights themselves, so commit it only then.
-            self.commit(weights=self.weights_dirty)
+            commit_t0 = time.time()
+            if push_files or push_deleted or self.weights_dirty:
+                self.commit(weights=self.weights_dirty)
+            parent_commit_s = time.time() - commit_t0
             self.weights_dirty = False
             mirrored = any(entry["mirrored"] for entry in remote_mounts)
 
@@ -530,8 +547,12 @@ class StateSync:
                 self.lock.acquire()
                 held = True
             pull_t0 = time.time()
-            self.reload()  # this container never reads /weights after bootstrap
-            stats = self.mirror.pull_changes(result["changed"], result["deleted"], result["dirs"])
+            payload = result.get("payload") or {}
+            log_path, log_text = result["log"], result.get("log_text")
+            # Volume reads (outputs not returned inline, or the log) need the latest commit.
+            if log_text is None or any(path not in payload for path in result["changed"]):
+                self.reload()  # this container never reads /weights after bootstrap
+            stats = self.mirror.pull_changes(result["changed"], result["deleted"], result["dirs"], payload)
             self.mirror.save()
             pull_s = time.time() - pull_t0
             if tracker:
@@ -545,6 +566,9 @@ class StateSync:
                         "push_s": round(push_s, 3),
                         "push_bytes": push_bytes,
                         "push_files": push_files,
+                        "lock_wait_s": round(lock_wait_s, 3),
+                        "parent_commit_s": round(parent_commit_s, 3),
+                        "pull_payload_files": len(payload),
                         "remote_s": round(remote_s, 3),
                         # scheduling + cold start + image load: the round trip minus the worker's own time
                         "startup_s": round(max(remote_s - worker_s - timing.get("slot_wait_s", 0.0), 0.0), 3),
@@ -565,19 +589,23 @@ class StateSync:
                     dirs=list(result["dirs"]),
                 )
             stats.raise_errors(f"pull of {image} outputs")
-            try:
-                with open(result["log"], encoding="utf-8", errors="replace") as stream:
-                    for line in stream:
-                        emit(line)
-            except FileNotFoundError:
-                emit(f"[v2d-modal] remote log missing: {result['log']}\n")
         finally:
             if held:
                 self.lock.release()
+        # The module's log goes to the caller after the sync lock is released (other calls'
+        # pushes and pulls need not wait for it), in one message instead of one per line.
+        if log_text is None:
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as stream:
+                    log_text = stream.read()
+            except FileNotFoundError:
+                log_text = f"[v2d-modal] remote log missing: {log_path}\n"
+        emit(log_text)
         if on_cpu and int(result["returncode"]) == 0:
             self.completed.add(self._signature(spec))
         if not on_cpu and int(result["returncode"]) == 0:
-            record_resident_hint(remote_spec)
+            # A Dict round trip; the caller's next step need not wait for it.
+            threading.Thread(target=record_resident_hint, args=(remote_spec,), daemon=True).start()
         emit(
             f"[v2d-modal] <- {image} exit={result['returncode']} in {time.time() - started:.0f}s; "
             f"pulled {stats.summary()}\n"
