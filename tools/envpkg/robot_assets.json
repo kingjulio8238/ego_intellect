@@ -1,0 +1,9 @@
+{
+  "_doc": "Redistribution status of the robot assets packages carry (MuJoCo export: collision meshes). External deliveries (tools/envpkg/delivery.py, --external) refuse any robot whose redistribution is not confirmed. Record a confirmation only with the licence or agreement that grants it.",
+  "vega_sharpa": {
+    "assets": "Dexmate Vega arms/torso collision meshes + Sharpa Wave hand collision meshes",
+    "licences": {"sharpa_wave": "Apache-2.0 (LICENSE and NOTICE shipped)", "dexmate_vega": null},
+    "redistribution_confirmed": false,
+    "decided": "2026-11-21: gate external deliveries until the Dexmate Vega licence is confirmed"
+  }
+}

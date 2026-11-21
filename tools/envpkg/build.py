@@ -552,6 +552,9 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
             _mujoco(staging, manifest, reasons)
     else:
         print("warning: no simulator exports (they need the task spec)", file=sys.stderr)
+    from .delivery import vendor_verifier
+
+    vendor_verifier(staging / "verify")  # labs verify a package without our repository
     verdict = package_verdict([effective_status(r["qa"]) for r in robot_entries.values()],
                               [g["status"] for g in gates.values()])
     if verdict in ("rejected", "flagged") and not allow_flagged:

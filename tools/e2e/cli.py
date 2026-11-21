@@ -35,8 +35,10 @@ from .stages import (
     evaluate_stages,
     finetune_stages,
     import_reconstruction_stages,
+    EXPORT_REPORT,
     RECONSTRUCTION_QA_REPORT,
     TRIAGE_REPORT,
+    export_stages,
     inspect_stages,
     pilot_collection_stage,
     read_pilot_measurement,
@@ -212,6 +214,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="verify the reconstruction bundle and apply the reconstruction QA gate (exit 3: rejected)",
     )
     inspect.add_argument("--fps", type=float, help="source frame rate (only when the run has no input video)")
+
+    subparsers.add_parser(
+        "export",
+        help="build, validate and archive the environment package (exit 3: the QA refused the clip)",
+    )
 
     retarget = subparsers.add_parser(
         "retarget", help="retarget the reconstructed motion"
@@ -764,6 +771,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             fps = _stage_value(args, config, "inspect", "fps")
             _runner(args, config).run_many(inspect_stages(config, fps=fps))
             return _gate_exit(args, config.run_root / RECONSTRUCTION_QA_REPORT, "reconstruction QA")
+        elif args.command == "export":
+            _runner(args, config).run_many(export_stages(config))
+            return _gate_exit(args, config.run_root / EXPORT_REPORT, "export")
         elif args.command == "retarget":
             sequence = str(config.workflow["sequence_id"])
             embodiment = _stage_value(

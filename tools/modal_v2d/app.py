@@ -556,7 +556,7 @@ def control_batch(clips: list[dict], max_parallel: int, source_revision: str, ba
 )
 def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, batch_id: str, app_id: str = "",
                    options: dict | None = None, mode: str = "shared", robot: list[dict] | None = None,
-                   render_every: int = 20, robot_parallel: int = 4) -> dict:
+                   render_every: int = 20, robot_parallel: int = 4, delivery: dict | None = None) -> dict:
     """The whole batch, remotely (a detached batch keeps going after the laptop disconnects):
 
     1. reconstruct: every clip's control steps (control_batch, or batch_driver per clip);
@@ -637,6 +637,55 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
     print(f"[v2d-batch {stamp()}] QA: {len(flagged)}/{len(qa)} flagged {flagged}; "
           f"render queue (flagged + 1 in {render_every}): {queue}", flush=True)
 
+    # Export + deliver (docs/pipeline/DELIVERY.md): package every simulated, unflagged clip in its
+    # own control container (CPU), then collect the accepted archives into one delivery folder.
+    t_export = time.time()
+    plan = {"export": bool(robot), "deliver": True, "external": False, **(delivery or {})}
+    exports: dict[str, dict] = {}
+
+    def export_one(name: str) -> tuple[str, dict]:
+        start = time.time()
+        try:
+            code = control.remote(B.export_steps(name), source_revision, False, f"{batch_id}-{name}-export",
+                                  app_id, options)
+        except Exception as exc:  # noqa: BLE001 - one clip failing must not stop the batch
+            code = f"{type(exc).__name__}: {exc}"[:200]
+        label = "ok" if code == 0 else "REFUSED by the QA" if code == B.GATE_REJECTED else f"FAILED {code}"
+        print(f"[v2d-batch {stamp()}] {name}: export {label} in {time.time() - start:.0f}s", flush=True)
+        return name, {"code": code, "seconds": round(time.time() - start, 1)}
+
+    to_export = [name for name in simulated if not qa.get(name, {}).get("flag")] if plan["export"] else []
+    if to_export:
+        with ThreadPoolExecutor(max_workers=max(1, robot_parallel)) as pool:
+            exports = dict(pool.map(export_one, to_export))
+        state_volume.reload()
+        for name, item in exports.items():
+            try:
+                report = json.loads(Path(sync.mirror_path(C.MIRROR_ROOT, f"{B.RUNS}/{name}/qa/export.json")).read_text())
+                item.update({k: report.get(k) for k in ("verdict", "env_id", "sha256", "bytes", "reasons")})
+            except (OSError, ValueError) as exc:
+                item["verdict"] = f"no export report: {exc}"
+    accepted = [name for name, item in exports.items() if item["code"] == 0 and item.get("verdict") == "accept"]
+    delivery_record: dict | None = None
+    if plan["deliver"] and accepted:
+        from tools.envpkg.delivery import deliver
+
+        logical = f"/e2e/deliveries/{batch_id}"
+        try:
+            manifest = deliver([Path(sync.mirror_path(C.MIRROR_ROOT, f"{B.RUNS}/{n}")) for n in accepted],
+                               Path(sync.mirror_path(C.MIRROR_ROOT, logical)), delivery_id=batch_id,
+                               external=bool(plan["external"]))
+            state_volume.commit()
+            delivery_record = {"path": logical, "volume_path": f"fs{logical}", "audience": manifest["audience"],
+                               "environments": [e["env_id"] for e in manifest["environments"]],
+                               "skipped": manifest["skipped"]}
+            print(f"[v2d-batch {stamp()}] delivery {batch_id}: {len(manifest['environments'])} environment(s) -> "
+                  f"volume {C.STATE_VOLUME}:fs{logical}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - reported; the exports stay in their run roots
+            delivery_record = {"error": f"{type(exc).__name__}: {exc}"[:500]}
+            print(f"[v2d-batch {stamp()}] delivery FAILED: {delivery_record['error']}", flush=True)
+    t_delivered = time.time()
+
     renders = []
     for name, argv in zip(queue, B.render_commands(queue)):  # low priority: one at a time, last
         start = time.time()
@@ -651,7 +700,21 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
     def ok_code(name: str, results: list[dict]) -> bool:
         return any(r["name"] == name and r["code"] == 0 for r in results)
 
-    delivered = [name for name in ok if not steps.get(name) or ok_code(name, robot_results)]
+    if plan["export"] and robot:
+        delivered = accepted if delivery_record is None or "error" not in delivery_record else []
+    else:  # no export step: a clip is done when its robot steps are
+        delivered = [name for name in ok if not steps.get(name) or ok_code(name, robot_results)]
+    outcomes = {}
+    for clip in clips:
+        name = clip["name"]
+        if name in delivered:
+            outcomes[name] = "delivered"
+        elif name in rejected:
+            outcomes[name] = "rejected"  # a gate (triage, reconstruction QA)
+        elif qa.get(name, {}).get("flag") or exports.get(name, {}).get("code") == B.GATE_REJECTED:
+            outcomes[name] = "flagged"  # physics QA (Isaac or MuJoCo): no package
+        else:
+            outcomes[name] = "failed"
     summary = {
         "batch_id": batch_id,
         "clips": len(clips),
@@ -659,6 +722,9 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
         "rejected": rejected,
         "robot": robot_results,
         "delivered": delivered,
+        "outcomes": outcomes,
+        "exports": exports,
+        "delivery": delivery_record,
         "qa": qa,
         "flagged": flagged,
         "solvability": solvability,
@@ -666,11 +732,11 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
         "render_queue": queue,
         "renders": renders,
         "phase_s": {"reconstruct": round(t_recon - t0), "robot": round(t_robot - t_recon),
-                    "render": round(t_end - t_robot)},
-        "delivered_per_h": round(len(delivered) / max(t_robot - t0, 1e-9) * 3600, 2),
+                    "export": round(t_delivered - t_export), "render": round(t_end - t_delivered)},
+        "delivered_per_h": round(len(delivered) / max(t_delivered - t0, 1e-9) * 3600, 2),
     }
-    print(f"[v2d-batch {stamp()}] {len(delivered)}/{len(clips)} delivered in {(t_robot - t0) / 60:.1f} min "
-          f"(render after delivery: {(t_end - t_robot) / 60:.1f} min) | {json.dumps(summary['phase_s'])}", flush=True)
+    print(f"[v2d-batch {stamp()}] {len(delivered)}/{len(clips)} delivered in {(t_delivered - t0) / 60:.1f} min "
+          f"(render after delivery: {(t_end - t_delivered) / 60:.1f} min) | {json.dumps(summary['phase_s'])}", flush=True)
     progress_store.put(f"batch:{batch_id}:pipeline", summary)
     return {"recon": recon, "pipeline": summary}
 
@@ -883,18 +949,21 @@ def batch(manifest: str, max_parallel: int = 4) -> None:
     print(f"[v2d-batch] mode {mode} | options {options} | module scaledown {C.MODULE_SCALEDOWN_S}s")
     if mode not in ("shared", "per_clip"):  # shared: one control container, one GPU ledger
         raise SystemExit(f"unknown batch mode {mode!r} (shared | per_clip)")
+    delivery = {k: spec[k] for k in ("export", "deliver", "external") if k in spec}
     out = batch_pipeline.remote(clips, max_parallel, _source_revision(), batch_id, app.app_id or "", options,
-                                mode, robot, render_every, int(spec.get("robot_parallel", 4)))
+                                mode, robot, render_every, int(spec.get("robot_parallel", 4)), delivery)
     results, pipeline = out["recon"], out["pipeline"]
     print(B.summarize(results))
     record = Path(__file__).resolve().parents[2] / ".e2e" / "batch" / batch_id / "pipeline.json"
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(json.dumps(pipeline, indent=1))
-    rejected = pipeline.get("rejected", {})
-    print(f"[v2d-batch] delivered {len(pipeline['delivered'])}/{len(results)} | rejected by gates {sorted(rejected)} | "
-          f"flagged {pipeline['flagged']} | rendered {[r['name'] for r in pipeline['renders'] if r['code'] == 0]} -> {record}")
-    # A gate rejection is a result, not a failure: only clips that neither delivered nor were rejected failed.
-    if len(pipeline["delivered"]) + len(rejected) != len(results) or any(r["code"] != 0 for r in pipeline["renders"]):
+    outcomes = pipeline.get("outcomes", {})
+    by = {k: sorted(n for n, o in outcomes.items() if o == k) for k in ("delivered", "rejected", "flagged", "failed")}
+    print(f"[v2d-batch] delivered {len(by['delivered'])}/{len(results)} | rejected by gates {by['rejected']} | "
+          f"flagged by physics QA {by['flagged']} | failed {by['failed']} | delivery {pipeline.get('delivery')} | "
+          f"rendered {[r['name'] for r in pipeline['renders'] if r['code'] == 0]} -> {record}")
+    # Rejected and flagged clips are results, not failures.
+    if by["failed"] or any(r["code"] != 0 for r in pipeline["renders"]) or "error" in (pipeline.get("delivery") or {}):
         raise SystemExit("some clips failed")
 
 

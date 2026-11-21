@@ -44,6 +44,22 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--task-profile", type=Path, help="task profile JSON (default: the run config's contracts.task)")
     build.add_argument("--simulators", default="isaaclab,mujoco", help="exports to write (comma-separated)")
 
+    export = sub.add_parser("export", help="build, strictly validate and archive one clip's package (exit 3: QA refused)")
+    export.add_argument("--run-root", type=Path, required=True)
+    export.add_argument("--task-profile", type=Path)
+    export.add_argument("--no-strict", action="store_true", help="skip delivery-mode validation (development only)")
+    export.add_argument("--exit-zero", action="store_true", help="exit 0 when the QA refused the clip (pipeline stages)")
+
+    archive = sub.add_parser("archive", help="deterministic <env_id>.tar.gz of a package")
+    archive.add_argument("package", type=Path)
+    archive.add_argument("--out", type=Path, required=True)
+
+    deliver = sub.add_parser("deliver", help="collect accepted exports into a delivery folder")
+    deliver.add_argument("run_roots", type=Path, nargs="+")
+    deliver.add_argument("--out", type=Path, required=True)
+    deliver.add_argument("--delivery-id", required=True)
+    deliver.add_argument("--external", action="store_true", help="refuse robots whose asset redistribution is unconfirmed")
+
     validate = sub.add_parser("validate", help="validate an env_package/v1 directory")
     validate.add_argument("package", type=Path)
     validate.add_argument("--strict", action="store_true", help="also require what delivery requires")
@@ -67,6 +83,27 @@ def main(argv: list[str] | None = None) -> int:
                 simulators=tuple(x for x in args.simulators.split(",") if x),
             )
             print(f"built {out}")
+            return 0
+        if args.command == "export":
+            from .delivery import QARefused, export_run
+
+            try:
+                report = export_run(args.run_root, task_profile=args.task_profile, strict=not args.no_strict)
+            except QARefused as exc:
+                print(f"export: REJECTED ({exc})")
+                return 0 if args.exit_zero else 3
+            print(f"export: {report['env_id']} -> {report['archive']} ({report['bytes']} bytes, sha256 {report['sha256'][:12]})")
+            return 0
+        if args.command == "archive":
+            from .delivery import archive
+
+            print(archive(args.package, args.out))
+            return 0
+        if args.command == "deliver":
+            from .delivery import deliver
+
+            manifest = deliver(args.run_roots, args.out, delivery_id=args.delivery_id, external=args.external)
+            print(f"delivered {len(manifest['environments'])} environment(s) to {args.out}; skipped {manifest['skipped']}")
             return 0
         from .validate import validate_package
 

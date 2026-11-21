@@ -543,6 +543,97 @@ class MuJoCoExportTest(unittest.TestCase):
         self.assertFalse(agreement({**close, "flag": True}, isaac)["agree"])
 
 
+class DeliveryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        git = mock.patch("tools.envpkg.build.git_state", return_value=("f" * 40, False))
+        git.start()
+        self.addCleanup(git.stop)
+
+    def export(self, name: str, **run_kwargs) -> Path:
+        from tools.envpkg.delivery import export_run
+
+        run = make_run_root(self.tmp / name, provenance=True, **run_kwargs)
+        export_run(run, simulators=("isaaclab",))
+        return run
+
+    def test_archive_is_deterministic_and_verifies(self) -> None:
+        from tools.envpkg.delivery import archive
+        from tools.envpkg.verify_env import main as verify, safe_extract
+
+        run = self.export("a")
+        report = json.loads((run / "qa/export.json").read_text())
+        self.assertEqual(report["verdict"], "accept")
+        package = run / "package/env"
+        self.assertTrue((package / "verify/verify_env.py").is_file())
+        self.assertTrue((package / "verify/envpkg/schemas/env_package_v1.schema.json").is_file())
+        again = archive(package, self.tmp / "again")
+        self.assertEqual(sha256_file(again), report["sha256"])  # same package, same bytes
+        extracted = safe_extract(again, self.tmp / "x")
+        self.assertEqual(extracted.name, report["env_id"])
+        self.assertEqual(verify([str(again)]), 0)
+        self.assertEqual(verify([str(package)]), 0)
+        self.assertFalse(list(package.rglob("__pycache__")))  # verifying never writes into the package
+
+    def test_unsafe_archives_are_refused(self) -> None:
+        import io
+        import tarfile
+
+        from tools.envpkg.verify_env import safe_extract
+
+        for member in ("../escape.txt", "/abs.txt"):
+            bad = self.tmp / "bad.tar.gz"
+            with tarfile.open(bad, "w:gz") as tar:
+                info = tarfile.TarInfo(member)
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+            with self.assertRaisesRegex(ValueError, "unsafe archive member"):
+                safe_extract(bad, self.tmp / "out")
+
+    def test_export_refuses_flagged_clips(self) -> None:
+        from tools.envpkg.__main__ import main as cli
+        from tools.envpkg.delivery import QARefused, export_run
+
+        run = make_run_root(self.tmp / "f", provenance=True, flag=True)
+        with self.assertRaises(QARefused):
+            export_run(run, simulators=("isaaclab",))
+        self.assertEqual(json.loads((run / "qa/export.json").read_text())["verdict"], "reject")
+        self.assertFalse((run / "package/env").exists())
+        args = ["export", "--run-root", str(run)]
+        with mock.patch("tools.envpkg.delivery.export_run", side_effect=QARefused("QA flagged")):
+            self.assertEqual(cli(args), 3)
+            self.assertEqual(cli([*args, "--exit-zero"]), 0)
+
+    def test_deliver(self) -> None:
+        from tools.envpkg.delivery import deliver
+        from tools.envpkg.verify_env import main as verify
+
+        good = self.export("good")
+        flagged = make_run_root(self.tmp / "flagged", provenance=True, flag=True)
+        try:
+            from tools.envpkg.delivery import export_run
+
+            export_run(flagged, simulators=("isaaclab",))
+        except ContractError:
+            pass
+        out = self.tmp / "delivery"
+        manifest = deliver([good, flagged, self.tmp / "missing"], out, delivery_id="d1")
+        self.assertEqual(len(manifest["environments"]), 1)
+        self.assertEqual({s["run"] for s in manifest["skipped"]}, {"flagged", "missing"})
+        archive = out / manifest["environments"][0]["archive"]
+        self.assertIn(archive.name, (out / "SHA256SUMS").read_text())
+        self.assertTrue((out / "verify/verify_env.py").is_file() and (out / "README.md").is_file())
+        self.assertEqual(verify([str(archive)]), 0)
+        with open(archive, "ab") as stream:
+            stream.write(b"tampered")
+        self.assertEqual(verify([str(archive)]), 1)  # SHA256SUMS mismatch
+        with self.assertRaisesRegex(ContractError, "not empty"):
+            deliver([good], out, delivery_id="d1")
+        with self.assertRaisesRegex(ContractError, "redistribution of vega_sharpa's assets is not confirmed"):
+            deliver([good], self.tmp / "external", delivery_id="d2", external=True)
+
+
 class IntakeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())

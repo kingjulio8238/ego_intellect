@@ -350,6 +350,37 @@ def triage_stages(config: E2EConfig) -> list[Stage]:
     ]
 
 
+EXPORT_REPORT = Path("qa/export.json")
+
+
+def export_stages(config: E2EConfig) -> list[Stage]:
+    """Export (stages 11-12): build the environment package (Isaac Lab + MuJoCo exports, MuJoCo
+    physics check), validate it in delivery mode and archive it to RUN_ROOT/package/.
+
+    A clip the QA rejected or flagged gets no package; the verdict is data in
+    RUN_ROOT/qa/export.json (`run_e2e.sh export` then exits 3). Contract: docs/pipeline/DELIVERY.md.
+    """
+    report = config.run_root / EXPORT_REPORT
+    return [
+        Stage(
+            "export",
+            (
+                _command(
+                    (sys.executable, "-m", "tools.envpkg", "export", "--run-root", config.run_root, "--exit-zero"),
+                    cwd=REPO_ROOT,
+                    label="build, validate and archive the environment package",
+                ),
+            ),
+            inputs=(
+                config.host_path("bundle"),
+                config.run_root / "simulate",
+            ),
+            outputs=(report,),
+            description="package the clip for delivery (refused when the QA rejected or flagged it)",
+        )
+    ]
+
+
 def inspect_stages(config: E2EConfig, fps: float | None = None) -> list[Stage]:
     """Validate the reconstruction bundle, then run the reconstruction QA gate (stage 5).
 

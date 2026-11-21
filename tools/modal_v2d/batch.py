@@ -43,6 +43,13 @@ not yet solve known-good clips, see docs/pipeline/OPTIMIZATION.md). `render_ever
 every flagged clip plus a stable 1-in-N sample (`render_queue`); the queue is drained last,
 one clip at a time, after every clip's robot steps (never on a clip's critical path).
 
+Gates (docs/pipeline/GATES.md): `triage` (default true) runs before reconstruct and `recon_qa`
+(default true) after it; a rejected clip stops there (exit 3, reported as rejected, not failed).
+Delivery (docs/pipeline/DELIVERY.md): after the robot phase every simulated, unflagged clip is
+exported (package + archive, control container, CPU; `export`: false skips it) and the accepted
+ones are collected into /e2e/deliveries/<batch_id> on the state volume (`deliver`: false skips
+it; `external`: true refuses robots whose asset redistribution is unconfirmed).
+
 Run roots are /e2e/runs/<name>. Paths are as seen inside the control container.
 """
 
@@ -146,6 +153,13 @@ def robot_steps(name: str, manifest: dict) -> list[list[str]]:
     Manifest `robot_steps` ([] = reconstruct only, the round-1 behaviour)."""
     config = f"{RUNS}/{name}/{CONFIG}"
     return [["--config", config, step] for step in manifest.get("robot_steps", DEFAULT_ROBOT_STEPS)]
+
+
+def export_steps(name: str) -> list[list[str]]:
+    """run_e2e.sh argv for a clip's export (package + archive), in a control container (CPU).
+    Exit 3 = the QA refused the clip (no package). Manifest `export`: false skips it; `deliver`:
+    false skips collecting the delivery; `external`: true enforces robot asset licences."""
+    return [["--config", f"{RUNS}/{name}/{CONFIG}", "export"]]
 
 
 def qa_report_path(name: str, embodiment: str = "vega") -> str:

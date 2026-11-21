@@ -26,6 +26,7 @@ task/<robot>/isaaclab_env_spec.json   the resolved Isaac Lab training environmen
 isaaclab/                             Isaac Lab export: env.json + the extension's dataset layout (ISAACLAB_EXPORT.md)
 mujoco/                               MuJoCo export: env.json + one MJCF scene per robot (MUJOCO_EXPORT.md)
 qa/<robot>/mujoco_replay.json         the second physics check (MuJoCo)
+verify/verify_env.py, verify/envpkg/  the lab-side verifier and the validator it runs (DELIVERY.md)
 ```
 
 Every path inside the package, including the ones stored in parquet files (`raw_motion_file`,

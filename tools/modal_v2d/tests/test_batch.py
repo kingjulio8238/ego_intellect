@@ -432,3 +432,9 @@ class RobotStepsTests(unittest.TestCase):
 
     def test_qa_report_path_matches_the_simulate_stage(self):
         self.assertEqual(B.qa_report_path("c1"), "/e2e/runs/c1/simulate/vega/replay_metrics.json")
+
+
+def test_export_steps_run_in_the_control_role():
+    steps = B.export_steps("tb1")
+    assert steps == [["--config", "/e2e/runs/tb1/e2e_config.json", "export"]]
+    assert C.role_for(steps[0]) == "control"

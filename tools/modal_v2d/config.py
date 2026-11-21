@@ -214,7 +214,8 @@ RATES = {
 #   control: CPU container; reconstruction modules are dispatched to GPU module functions.
 #   rg:      GPU container built from robotic_grounding/workflow/Dockerfile + Isaac-GR00T;
 #            the `robotic-grounding` image runs locally, the loader image remotely.
-CONTROL_COMMANDS = {"init", "use", "status", "setup", "triage", "reconstruct", "import-reconstruction", "inspect"}
+CONTROL_COMMANDS = {"init", "use", "status", "setup", "triage", "reconstruct", "import-reconstruction", "inspect",
+                    "export"}
 RG_COMMANDS = {"doctor", "retarget", "simulate", "solvability", "render", "train-expert", "collect", "finetune", "evaluate"}
 GLOBAL_FLAGS_WITH_VALUE = {"--config"}
 

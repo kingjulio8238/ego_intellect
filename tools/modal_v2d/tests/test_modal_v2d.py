@@ -527,7 +527,7 @@ class ConfigTests(unittest.TestCase):
         e2e_commands = {
             "init", "use", "setup", "doctor", "triage", "reconstruct", "import-reconstruction", "inspect",
             "retarget", "simulate", "solvability", "render", "train-expert", "collect", "finetune", "evaluate",
-            "status",
+            "status", "export",
         }
         self.assertEqual(config.CONTROL_COMMANDS | config.RG_COMMANDS, e2e_commands)
 

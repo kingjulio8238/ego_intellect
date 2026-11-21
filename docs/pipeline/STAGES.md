@@ -22,7 +22,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 9 | Solvability check (replaces 13.4 h RL as our QA) | `solvability` (experimental) | **Paused**: test validated, no cheap proof yet ([OPTIMIZATION.md](OPTIMIZATION.md)) | — |
 | 10 | Task / reward spec | package builder (`task/task.json`), from `simulate`'s `env_spec.json` | **Built** (C): `task_spec/v1`: rewards, terminations, action, observations, resets, assist, physics, train/eval episodes, `lift_hold` success checked on the reference ([TASK_SPEC.md](TASK_SPEC.md)) | seconds (CPU) |
 | 11 | Export / package (Isaac Lab + MuJoCo) | `python3 -m tools.envpkg build / validate` | **Contract + Isaac Lab + MuJoCo exports built** (A, D, E): `env_package/v1` core + validator ([ENV_PACKAGE.md](ENV_PACKAGE.md)); `isaaclab/` proven in a fresh Isaac Lab process ([ISAACLAB_EXPORT.md](ISAACLAB_EXPORT.md)); `mujoco/` scene + second physics check agreeing with Isaac ([MUJOCO_EXPORT.md](MUJOCO_EXPORT.md)) | seconds (core) |
-| 12 | Delivery to lab | — | **To add** | — |
+| 12 | Delivery to lab | `run_e2e.sh export`; batch deliver step; `verify/verify_env.py` | **Built** (F): deterministic archives, delivery folder (manifest, SHA256SUMS, verifier), robot-licence gate for external deliveries; no upload yet ([DELIVERY.md](DELIVERY.md)) | export seconds (CPU) |
 
 ## Ours, not per clip
 
@@ -56,5 +56,5 @@ Decided: build before more speed work; package for Isaac Lab and MuJoCo. In depe
 | C | Task/reward spec per clip (stage 10), written into `manifest.task` | **Done**: `tools/envpkg/task.py`, [TASK_SPEC.md](TASK_SPEC.md) |
 | D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | **Done**: `tools/envpkg/isaaclab.py` + `isaaclab_check.py`, [ISAACLAB_EXPORT.md](ISAACLAB_EXPORT.md) |
 | E | MuJoCo exporter (`mujoco/`), second physics check | **Done**: `tools/envpkg/mujoco_export.py` + `mujoco_replay.py`, [MUJOCO_EXPORT.md](MUJOCO_EXPORT.md) (plain MJCF rather than FlashCHORD's Newton scene, so labs load it with stock MuJoCo) |
-| F | Delivery: archive, lab-side verify, `run_e2e.sh export` / `deliver` gated on QA | Todo |
+| F | Delivery: archive, lab-side verify, `run_e2e.sh export` / `deliver` gated on QA | **Done**: `tools/envpkg/delivery.py` + `verify_env.py`, batch export/deliver phase, [DELIVERY.md](DELIVERY.md) |
 | G | One end-to-end run on a fresh workspace (founders-78536), with cold setup measured | Todo |

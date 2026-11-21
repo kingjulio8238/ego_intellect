@@ -87,7 +87,12 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def git_state(repo: Path = REPO_ROOT) -> tuple[str | None, bool | None]:
-    """(HEAD revision, worktree dirty) of the repository that builds the package."""
+    """(HEAD revision, worktree dirty) of the repository that builds the package. In a Modal
+    container the checkout is a snapshot: the launcher's V2D_SOURCE_REVISION ("<sha>[+dirty]")
+    is the truth there."""
+    source = os.environ.get("V2D_SOURCE_REVISION", "")
+    if source and source != "unknown":
+        return source.removesuffix("+dirty"), source.endswith("+dirty")
     try:
         revision = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
