@@ -430,8 +430,28 @@
       }
     },
     "task": {
-      "type": "null",
-      "description": "Filled by the task/reward spec stage (stage 10)."
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "spec",
+            "schema"
+          ],
+          "properties": {
+            "spec": {
+              "$ref": "#/$defs/path"
+            },
+            "schema": {
+              "const": "task_spec/v1"
+            }
+          }
+        }
+      ],
+      "description": "The task/reward spec (task_spec/v1), or null when the clip has no resolved training environment yet."
     },
     "simulators": {
       "type": "object",

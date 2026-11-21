@@ -1097,7 +1097,11 @@ class StageTests(Fixture):
             command[command.index("--output") + 1].endswith("/simulate/vega/replay_metrics.json")
         )
         self.assertEqual(
-            stage.outputs, (config.run_root / "simulate" / "vega" / "replay_metrics.json",)
+            stage.outputs,
+            (
+                config.run_root / "simulate" / "vega" / "replay_metrics.json",
+                config.run_root / "simulate" / "vega" / "env_spec.json",
+            ),
         )
 
     def test_solvability_trains_a_budgeted_policy_and_evaluates_it(self) -> None:

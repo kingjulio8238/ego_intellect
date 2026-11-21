@@ -20,7 +20,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 7 | Environment build + physics QA replay (assets, collision, support surfaces; numeric flags) | `simulate` | **Optimized** (−50%): CPU physics for the replay, Isaac caches baked into the image | ~0.5–0.6 min (was ~1.1) |
 | 8 | Render overlay (visual check) | `render` (overlay of the physics replay; flagged + 1 in 20, after delivery) | **Optimized** | 0 on the path (was 5.3 min); 20 s per rendered clip |
 | 9 | Solvability check (replaces 13.4 h RL as our QA) | `solvability` (experimental) | **Paused**: test validated, no cheap proof yet ([OPTIMIZATION.md](OPTIMIZATION.md)) | — |
-| 10 | Task / reward spec | — | **To add** | — |
+| 10 | Task / reward spec | package builder (`task/task.json`), from `simulate`'s `env_spec.json` | **Built** (C): `task_spec/v1`: rewards, terminations, action, observations, resets, assist, physics, train/eval episodes, `lift_hold` success checked on the reference ([TASK_SPEC.md](TASK_SPEC.md)) | seconds (CPU) |
 | 11 | Export / package (Isaac Lab + MuJoCo) | `python3 -m tools.envpkg build / validate` | **Contract built** (A): `env_package/v1` core + validator ([ENV_PACKAGE.md](ENV_PACKAGE.md)); simulator exporters next (D, E) | seconds (core) |
 | 12 | Delivery to lab | — | **To add** | — |
 
@@ -53,7 +53,7 @@ Decided: build before more speed work; package for Isaac Lab and MuJoCo. In depe
 |---|---|---|
 | A | Package contract + vendor intake spec (stages 1, 11) | **Done**: `tools/envpkg`, [ENV_PACKAGE.md](ENV_PACKAGE.md), [INTAKE.md](INTAKE.md) |
 | B | Triage gate + reconstruction QA thresholds (stages 3, 5) | **Done**: `tools/gates`, [GATES.md](GATES.md); calibrated 52/52 (recon) and 32/32 (triage) |
-| C | Task/reward spec per clip (stage 10), written into `manifest.task` | Todo |
+| C | Task/reward spec per clip (stage 10), written into `manifest.task` | **Done**: `tools/envpkg/task.py`, [TASK_SPEC.md](TASK_SPEC.md) |
 | D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | Todo |
 | E | MuJoCo exporter (`mujoco/`, starting from `robotic_grounding/flash_chord`), second physics check | Todo |
 | F | Delivery: archive, lab-side verify, `run_e2e.sh export` / `deliver` gated on QA | Todo |

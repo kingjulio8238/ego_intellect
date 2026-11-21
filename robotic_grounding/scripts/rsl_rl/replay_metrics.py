@@ -80,6 +80,15 @@ parser.add_argument(
     help="step cap; 0 = the motion's length plus a margin",
 )
 parser.add_argument(
+    "--env_spec_out",
+    type=str,
+    default="",
+    help="also write the TRAINING environment's resolved configuration (rewards, terminations, "
+    "actions, observations, resets, curriculum, robot, timing; before the QA replay's overrides) "
+    "plus its runtime dimensions to this JSON, the source of the package's task spec "
+    "(tools/envpkg/task.py in the monorepo); default: env_spec.json next to --output; 'none' to skip",
+)
+parser.add_argument(
     "--voc_scale",
     type=float,
     default=0.0,
@@ -138,6 +147,69 @@ def _apply_qa_defaults(env_cfg, command_name: str, voc_scale: float) -> None:
         cmd.voc_reset_scale = voc_scale
     if hasattr(env_cfg, "curriculum"):
         env_cfg.curriculum = None
+
+
+ENV_SPEC_SCHEMA = "v2d_env_spec_v1"
+
+
+def _cfg_dict(obj) -> object:
+    """A configclass as plain data (functions become "module:name"), or the error."""
+    if obj is None:
+        return None
+    try:
+        return obj.to_dict()
+    except Exception as exc:  # noqa: BLE001 - recorded, and the task-spec builder refuses it
+        return {"_unserializable": f"{type(exc).__name__}: {exc}"}
+
+
+def _training_env_spec(env_cfg, command_name: str) -> dict:
+    """The training configuration as resolved for this clip, before _apply_qa_defaults edits it."""
+    robot = env_cfg.scene.robot
+    return {
+        "schema": ENV_SPEC_SCHEMA,
+        "task": args_cli.task,
+        "motion_file": args_cli.motion_file,
+        "command_name": command_name,
+        "decimation": int(env_cfg.decimation),
+        "sim_dt": float(env_cfg.sim.dt),
+        "episode_length_s": float(env_cfg.episode_length_s),
+        "actions": _cfg_dict(env_cfg.actions),
+        "observations": _cfg_dict(env_cfg.observations),
+        "rewards": _cfg_dict(env_cfg.rewards),
+        "terminations": _cfg_dict(env_cfg.terminations),
+        "events": _cfg_dict(env_cfg.events),
+        "curriculum": _cfg_dict(getattr(env_cfg, "curriculum", None)),
+        "command": _cfg_dict(getattr(env_cfg.commands, command_name)),
+        "robot": _cfg_dict(robot),
+        "object_solver_iterations": [
+            getattr(env_cfg, "object_solver_position_iteration_count", None),
+            getattr(env_cfg, "object_solver_velocity_iteration_count", None),
+        ],
+    }
+
+
+def _runtime_spec(unwrapped, command, train_episode_length_s: float) -> dict:
+    """Dimensions and term lists of the built environment (unchanged by the QA overrides)."""
+    obs = unwrapped.observation_manager
+    try:
+        joint_names = list(unwrapped.scene["robot"].data.joint_names)
+    except KeyError:
+        joint_names = []
+    return {
+        "step_dt": float(unwrapped.step_dt),
+        "action_dim": int(unwrapped.action_manager.total_action_dim),
+        "observation_dims": {g: list(np.atleast_1d(d).tolist()) for g, d in obs.group_obs_dim.items()},
+        "observation_terms": {
+            g: dict(zip(obs.active_terms[g], [list(np.atleast_1d(d).tolist()) for d in obs.group_obs_term_dim[g]], strict=True))
+            for g in obs.active_terms
+        },
+        "reward_terms": list(unwrapped.reward_manager.active_terms),
+        "termination_terms": list(unwrapped.termination_manager.active_terms),
+        "joint_names": joint_names,
+        "trajectory_end_timestep": int(_first(getattr(command, "trajectory_end_timestep", command.num_timesteps - 1))),
+        "num_timesteps": int(command.num_timesteps),
+        "train_max_episode_steps": int(np.ceil(train_episode_length_s / float(unwrapped.step_dt) - 1e-9)),
+    }
 
 
 def _first(x) -> float:
@@ -231,6 +303,7 @@ def main() -> int:
     apply_scene_config(env_cfg, scene_config)
     drift = _grasp_drift(str(scene_config.motion_file))
     command_name = _command_name(env_cfg)
+    env_spec = _training_env_spec(env_cfg, command_name)
     _apply_qa_defaults(env_cfg, command_name, args_cli.voc_scale)
 
     env = gym.make(args_cli.task, cfg=env_cfg)
@@ -238,6 +311,18 @@ def main() -> int:
     command = unwrapped.command_manager.get_term(command_name)
     env.reset()
     t_ready = time.time()
+    env_spec_out = args_cli.env_spec_out or os.path.join(
+        os.path.dirname(os.path.abspath(args_cli.output)), "env_spec.json"
+    )
+    if env_spec_out != "none":
+        try:
+            env_spec["runtime"] = _runtime_spec(unwrapped, command, env_spec["episode_length_s"])
+        except Exception as exc:  # noqa: BLE001 - recorded; the task-spec builder refuses the file
+            env_spec["runtime_error"] = f"{type(exc).__name__}: {exc}"
+            print(f"[WARN] replay_metrics: env spec runtime section failed: {exc}")
+        os.makedirs(os.path.dirname(os.path.abspath(env_spec_out)), exist_ok=True)
+        with open(env_spec_out, "w") as f:
+            json.dump(env_spec, f, indent=1, default=str)
 
     end = int(_first(getattr(command, "trajectory_end_timestep", command.num_timesteps - 1)))
     start = int(_first(command.timestep))

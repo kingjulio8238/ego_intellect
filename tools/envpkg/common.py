@@ -18,7 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_SCHEMA = "env_package/v1"
 SUPPORT_SCHEMA = "support_surfaces/v1"
 INTAKE_SCHEMA = "intake/v1"
+TASK_SCHEMA = "task_spec/v1"
 _SCHEMA_FILES = {
+    TASK_SCHEMA: "task_spec_v1.schema.json",
     PACKAGE_SCHEMA: "env_package_v1.schema.json",
     SUPPORT_SCHEMA: "support_surfaces_v1.schema.json",
     INTAKE_SCHEMA: "intake_v1.schema.json",

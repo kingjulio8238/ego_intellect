@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task_spec/v1",
+  "title": "Task and reward spec (task_spec/v1)",
+  "description": "task/task.json in an environment package. Contract: docs/pipeline/TASK_SPEC.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "task_id", "instruction", "object", "profile", "success", "robots"],
+  "properties": {
+    "schema": {"const": "task_spec/v1"},
+    "task_id": {"type": "string", "minLength": 1},
+    "instruction": {"type": ["string", "null"]},
+    "object": {"type": "string", "minLength": 1},
+    "profile": {"type": ["string", "null"]},
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluator", "params", "definition"],
+      "properties": {
+        "evaluator": {"enum": ["lift_hold"]},
+        "params": {"type": "object"},
+        "definition": {"type": "string", "minLength": 1}
+      }
+    },
+    "robots": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/robot"}}
+  },
+  "$defs": {
+    "term": {
+      "type": "object",
+      "required": ["name", "function", "definition", "params"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "function": {"type": "string", "pattern": "^[A-Za-z0-9_.]+:[A-Za-z0-9_]+$"},
+        "definition": {"type": "string", "minLength": 1},
+        "params": {"type": "object"}
+      }
+    },
+    "robot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["isaaclab_task", "env_spec", "reference", "timing", "action", "observations", "rewards",
+                   "terminations", "reset", "assist", "physics", "command", "episode", "reference_check", "notes"],
+      "properties": {
+        "isaaclab_task": {"type": "string"},
+        "env_spec": {"type": "string", "description": "package path of the Isaac Lab environment dump this part was built from"},
+        "reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["motion", "fps", "frames", "playback_speed", "control_steps"],
+          "properties": {
+            "motion": {"type": "string"},
+            "fps": {"type": "number", "exclusiveMinimum": 0},
+            "frames": {"type": "integer", "minimum": 2},
+            "playback_speed": {"type": "number", "exclusiveMinimum": 0},
+            "control_steps": {"type": "integer", "minimum": 2}
+          }
+        },
+        "timing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["physics_dt_s", "decimation", "control_dt_s"],
+          "properties": {
+            "physics_dt_s": {"type": "number", "exclusiveMinimum": 0},
+            "decimation": {"type": "integer", "minimum": 1},
+            "control_dt_s": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        "action": {
+          "type": "object",
+          "required": ["dim", "joint_names", "terms"],
+          "properties": {
+            "dim": {"type": "integer", "minimum": 1},
+            "joint_names": {"type": "array", "items": {"type": "string"}},
+            "terms": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["name", "kind", "definition"]}}
+          }
+        },
+        "observations": {
+          "type": "object",
+          "required": ["dim", "concatenated", "corruption", "terms"],
+          "properties": {
+            "dim": {"type": "array", "items": {"type": "integer"}},
+            "terms": {"type": "array", "minItems": 1, "items": {"allOf": [{"$ref": "#/$defs/term"}, {"required": ["dim"]}]}}
+          }
+        },
+        "rewards": {
+          "type": "array", "minItems": 1,
+          "items": {"allOf": [{"$ref": "#/$defs/term"}, {"required": ["weight"], "properties": {"weight": {"type": "number"}}}]}
+        },
+        "terminations": {
+          "type": "array", "minItems": 1,
+          "items": {"allOf": [{"$ref": "#/$defs/term"}, {"required": ["time_out"], "properties": {"time_out": {"type": "boolean"}}}]}
+        },
+        "reset": {"type": "object", "required": ["start_frame", "first_frame_probability", "freeze_steps"]},
+        "assist": {"type": "object"},
+        "physics": {"type": "object"},
+        "command": {"type": "object"},
+        "episode": {
+          "type": "object",
+          "required": ["train", "evaluation"],
+          "properties": {
+            "train": {"type": "object", "required": ["max_steps", "ends"], "properties": {"max_steps": {"type": ["integer", "null"], "minimum": 1}}},
+            "evaluation": {
+              "type": "object",
+              "required": ["start_frame", "assist_scale", "max_steps", "pass"],
+              "properties": {
+                "start_frame": {"const": 0},
+                "assist_scale": {"const": 0.0},
+                "max_steps": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        },
+        "reference_check": {
+          "type": "object",
+          "required": ["success", "steps"],
+          "properties": {"success": {"const": true}, "steps": {"type": "integer"}}
+        },
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

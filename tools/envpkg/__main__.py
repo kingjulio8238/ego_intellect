@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--allow-flagged", action="store_true", help="package a clip the physics QA flagged")
     build.add_argument("--allow-missing-provenance", action="store_true", help="non-deliverable package without run records")
     build.add_argument("--force", action="store_true", help="replace an existing package")
+    build.add_argument("--task-profile", type=Path, help="task profile JSON (default: the run config's contracts.task)")
 
     validate = sub.add_parser("validate", help="validate an env_package/v1 directory")
     validate.add_argument("package", type=Path)
@@ -61,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.run_root, args.out, robots=args.robots, sequence_id=args.sequence_id,
                 instruction=args.instruction, object_prompt=args.object_prompt,
                 allow_flagged=args.allow_flagged, allow_missing_provenance=args.allow_missing_provenance,
-                force=args.force,
+                force=args.force, task_profile=args.task_profile,
             )
             print(f"built {out}")
             return 0

@@ -628,7 +628,8 @@ def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
 
     Vega: build the environment and replay the whole clip in physics without cameras
     (`replay_metrics.py`), writing RUN_ROOT/simulate/vega/replay_metrics.json with the
-    numeric QA checks and a `flag` (flagged clips get the optional `render` video). A flag
+    numeric QA checks and a `flag` (flagged clips get the optional `render` video), and
+    env_spec.json, the training environment as resolved for the clip (the task spec's source). A flag
     is data, not a stage failure. Floating hands: the 2-step smoke (the replay metrics are
     calibrated for the whole-body task only).
     """
@@ -667,8 +668,15 @@ def simulate_stages(config: E2EConfig, embodiment: str) -> list[Stage]:
                 "--output",
                 output_container / "replay_metrics.json",
             )
-            outputs = (config.run_root / "simulate" / name / "replay_metrics.json",)
-            description = f"build the {name} environment and replay it in physics (QA metrics)"
+            # env_spec.json: the training environment as resolved for this clip, the source of
+            # the package's task spec (tools/envpkg/task.py).
+            outputs = (
+                config.run_root / "simulate" / name / "replay_metrics.json",
+                config.run_root / "simulate" / name / "env_spec.json",
+            )
+            description = (
+                f"build the {name} environment and replay it in physics (QA metrics, resolved env spec)"
+            )
         command = _container_command(
             config,
             (*_container_env(config), "python", *argv),

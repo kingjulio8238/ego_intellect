@@ -1,0 +1,1212 @@
+{
+ "schema": "v2d_env_spec_v1",
+ "task": "VegaSharpa-WholeBody-Manip-v0",
+ "motion_file": "ego_recon/processed/sequence_id=tissue_box/robot_name=vega_sharpa",
+ "command_name": "motion",
+ "decimation": 5,
+ "sim_dt": 0.01,
+ "episode_length_s": 20.0,
+ "actions": {
+  "joint_pos": {
+   "class_type": "robotic_grounding.tasks.v2d_whole_body.mdp.actions.reference_residual_action:ReferenceResidualJointPositionAction",
+   "asset_name": "robot",
+   "debug_vis": false,
+   "clip": 1.0,
+   "joint_names": [
+    ".*"
+   ],
+   "command_name": "motion",
+   "scale": 0.15,
+   "ema_factor": 0.3,
+   "clip_to_joint_limits": true
+  },
+  "virtual_rigid_object_control_tissue_box": {
+   "class_type": "robotic_grounding.tasks.v2d.mdp.actions.virtual_rigid_object_control:VirtualRigidObjectControl",
+   "asset_name": "tissue_box",
+   "debug_vis": false,
+   "clip": null,
+   "command_name": "motion",
+   "tracking_controller_linear_stiffness": 50.0,
+   "tracking_controller_linear_damping": 10.0,
+   "tracking_controller_angular_stiffness": 10.0,
+   "tracking_controller_angular_damping": 0.1,
+   "max_force": 60.0,
+   "max_torque": 60.0
+  }
+ },
+ "observations": {
+  "policy": {
+   "concatenate_terms": true,
+   "concatenate_dim": -1,
+   "enable_corruption": false,
+   "history_length": null,
+   "flatten_history_dim": true,
+   "joint_pos_rel": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.sonic_policy_observations:joint_pos_rel",
+    "params": {
+     "asset_cfg": {
+      "name": "robot",
+      "joint_names": null,
+      "joint_ids": "slice(None, None, None)",
+      "fixed_tendon_names": null,
+      "fixed_tendon_ids": "slice(None, None, None)",
+      "body_names": null,
+      "body_ids": "slice(None, None, None)",
+      "object_collection_names": null,
+      "object_collection_ids": "slice(None, None, None)",
+      "preserve_order": false
+     },
+     "sonic_joints_only": false,
+     "action_name": "joint_pos"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "joint_vel_rel": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.sonic_policy_observations:joint_vel_rel",
+    "params": {
+     "asset_cfg": {
+      "name": "robot",
+      "joint_names": null,
+      "joint_ids": "slice(None, None, None)",
+      "fixed_tendon_names": null,
+      "fixed_tendon_ids": "slice(None, None, None)",
+      "body_names": null,
+      "body_ids": "slice(None, None, None)",
+      "object_collection_names": null,
+      "object_collection_ids": "slice(None, None, None)",
+      "preserve_order": false
+     },
+     "sonic_joints_only": false,
+     "action_name": "joint_pos"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "motion_joint_pos_delta": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:motion_joint_pos_delta",
+    "params": {
+     "command_name": "motion",
+     "num_future_frames": 3
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "motion_ee_pos_delta": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:motion_ee_pos_delta",
+    "params": {
+     "command_name": "motion",
+     "num_future_frames": 3
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "motion_ee_quat_delta": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:motion_ee_quat_delta",
+    "params": {
+     "command_name": "motion",
+     "num_future_frames": 3
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "left_hand_object_transform": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:hand_object_reference_transform",
+    "params": {
+     "side": "left",
+     "command_name": "motion",
+     "threshold": 10.0
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "right_hand_object_transform": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:hand_object_reference_transform",
+    "params": {
+     "side": "right",
+     "command_name": "motion",
+     "threshold": 10.0
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "object_pose_delta": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:object_pose_delta",
+    "params": {
+     "command_name": "motion"
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "wrist_position_e": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:wrist_position_e",
+    "params": {
+     "command_name": "motion"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "wrist_wxyz_e": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:wrist_wxyz_e",
+    "params": {
+     "command_name": "motion"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "object_position_e": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:object_position_e",
+    "params": {
+     "command_name": "motion"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "object_wxyz_e": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:object_wxyz_e",
+    "params": {
+     "command_name": "motion"
+    },
+    "modifiers": null,
+    "noise": {
+     "func": "isaaclab.utils.noise.noise_model:uniform_noise",
+     "operation": "add",
+     "n_min": -0.01,
+     "n_max": 0.01
+    },
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "trajectory_progress": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.policy_observations:command_trajectory_progress",
+    "params": {},
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   },
+   "last_action": {
+    "func": "robotic_grounding.tasks.v2d_whole_body.mdp.observations.sonic_policy_observations:last_action",
+    "params": {
+     "action_name": "joint_pos",
+     "sonic_joints_only": false
+    },
+    "modifiers": null,
+    "noise": null,
+    "clip": null,
+    "scale": null,
+    "history_length": 0,
+    "flatten_history_dim": true
+   }
+  }
+ },
+ "rewards": {
+  "termination_penalty": {
+   "func": "isaaclab.envs.mdp.rewards:is_terminated",
+   "params": {},
+   "weight": -100.0
+  },
+  "motion_object_keypoints_tracking_exp": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.tracking_rewards:motion_object_keypoints_tracking_exp",
+   "params": {
+    "command_name": "motion",
+    "var": 0.1
+   },
+   "weight": 2.0
+  },
+  "motion_hand_keypoints_gaussian_exp": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.tracking_rewards:motion_hand_keypoints_gaussian_exp",
+   "params": {
+    "command_name": "motion",
+    "std": 0.775
+   },
+   "weight": 0.5
+  },
+  "force_closure": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.contact_rewards:force_closure_reward",
+   "params": {
+    "command_name": "motion",
+    "min_support": 0.01
+   },
+   "weight": 5.0
+  },
+  "action_rate": {
+   "func": "isaaclab.envs.mdp.rewards:action_rate_l2",
+   "params": {},
+   "weight": -0.0005
+  },
+  "action_l2": {
+   "func": "isaaclab.envs.mdp.rewards:action_l2",
+   "params": {},
+   "weight": -0.005
+  },
+  "motion_finger_joint_pos_gaussian_exp": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.tracking_rewards:motion_finger_joint_pos_gaussian_exp",
+   "params": {
+    "command_name": "motion",
+    "std": 1.0
+   },
+   "weight": 0.0
+  },
+  "motion_contact_tracking_gaussian_exp": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.tracking_rewards:motion_contact_tracking_gaussian_exp",
+   "params": {
+    "command_name": "motion",
+    "std": 0.05
+   },
+   "weight": 0.0
+  },
+  "contact_wrench_support_reward": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.contact_rewards:contact_wrench_support_reward",
+   "params": {
+    "command_name": "motion",
+    "tolerance": 0.1,
+    "var": 0.1
+   },
+   "weight": 0.0
+  },
+  "unintended_contact_penalty": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.contact_rewards:unintended_contact_penalty",
+   "params": {
+    "command_name": "motion"
+   },
+   "weight": 0.0
+  },
+  "missed_contact_penalty": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.rewards.contact_rewards:missed_contact_penalty",
+   "params": {
+    "command_name": "motion"
+   },
+   "weight": 0.0
+  }
+ },
+ "terminations": {
+  "timeout": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.terminations.terminations:timestep_termination",
+   "params": {
+    "command_name": "motion"
+   },
+   "time_out": true
+  },
+  "hand_wrist_away": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.terminations.terminations:hand_wrist_away_from_trajectory",
+   "params": {
+    "command_name": "motion",
+    "threshold": 0.15
+   },
+   "time_out": false
+  },
+  "object_pos_error": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.terminations.terminations:object_pos_error",
+   "params": {
+    "command_name": "motion",
+    "threshold": 0.1
+   },
+   "time_out": false
+  },
+  "object_quat_error": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.terminations.terminations:object_quat_error",
+   "params": {
+    "command_name": "motion",
+    "threshold": 0.5
+   },
+   "time_out": false
+  },
+  "robot_state_diverged": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.terminations.terminations:robot_state_diverged",
+   "params": {
+    "asset_cfg": {
+     "name": "robot",
+     "joint_names": null,
+     "joint_ids": "slice(None, None, None)",
+     "fixed_tendon_names": null,
+     "fixed_tendon_ids": "slice(None, None, None)",
+     "body_names": null,
+     "body_ids": "slice(None, None, None)",
+     "object_collection_names": null,
+     "object_collection_ids": "slice(None, None, None)",
+     "preserve_order": false
+    },
+    "max_joint_vel": 100.0
+   },
+   "time_out": false
+  }
+ },
+ "events": {
+  "reset_to_trajectory_frame": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.events.events:reset_robot_to_trajectory_start",
+   "params": {
+    "command_name": "motion",
+    "trajectory_time_index": [
+     0,
+     999999
+    ],
+    "joint_position_noise_groups": {
+     "arm": {
+      "joint_names": [
+       "R_arm_j1",
+       "R_arm_j2",
+       "R_arm_j3",
+       "R_arm_j4",
+       "R_arm_j5",
+       "R_arm_j6",
+       "R_arm_j7",
+       "L_arm_j1",
+       "L_arm_j2",
+       "L_arm_j3",
+       "L_arm_j4",
+       "L_arm_j5",
+       "L_arm_j6",
+       "L_arm_j7"
+      ],
+      "range": [
+       0.0,
+       0.0
+      ]
+     },
+     "finger": {
+      "joint_names": [
+       "right_thumb_CMC_FE",
+       "right_thumb_CMC_AA",
+       "right_thumb_MCP_FE",
+       "right_thumb_MCP_AA",
+       "right_thumb_IP",
+       "right_index_MCP_FE",
+       "right_index_MCP_AA",
+       "right_index_PIP",
+       "right_index_DIP",
+       "right_middle_MCP_FE",
+       "right_middle_MCP_AA",
+       "right_middle_PIP",
+       "right_middle_DIP",
+       "right_ring_MCP_FE",
+       "right_ring_MCP_AA",
+       "right_ring_PIP",
+       "right_ring_DIP",
+       "right_pinky_CMC",
+       "right_pinky_MCP_FE",
+       "right_pinky_MCP_AA",
+       "right_pinky_PIP",
+       "right_pinky_DIP",
+       "left_thumb_CMC_FE",
+       "left_thumb_CMC_AA",
+       "left_thumb_MCP_FE",
+       "left_thumb_MCP_AA",
+       "left_thumb_IP",
+       "left_index_MCP_FE",
+       "left_index_MCP_AA",
+       "left_index_PIP",
+       "left_index_DIP",
+       "left_middle_MCP_FE",
+       "left_middle_MCP_AA",
+       "left_middle_PIP",
+       "left_middle_DIP",
+       "left_ring_MCP_FE",
+       "left_ring_MCP_AA",
+       "left_ring_PIP",
+       "left_ring_DIP",
+       "left_pinky_CMC",
+       "left_pinky_MCP_FE",
+       "left_pinky_MCP_AA",
+       "left_pinky_PIP",
+       "left_pinky_DIP"
+      ],
+      "range": [
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "object_xy_noise_range": [
+     0.0,
+     0.0
+    ],
+    "object_yaw_noise_range": [
+     0.0,
+     0.0
+    ]
+   },
+   "mode": "reset",
+   "interval_range_s": null,
+   "is_global_time": false,
+   "min_step_count_between_reset": 0
+  },
+  "setup_collision_groups": {
+   "func": "robotic_grounding.tasks.v2d.mdp.events:configure_collision_groups",
+   "params": {
+    "robot_names": [
+     "Robot"
+    ],
+    "object_names": [
+     "tissue_box"
+    ],
+    "fixed_object_names": [
+     "support_surface_1"
+    ],
+    "disable_robot_to_object_collisions": false,
+    "disable_robot_to_fixed_object_collisions": true
+   },
+   "mode": "prestartup",
+   "interval_range_s": null,
+   "is_global_time": false,
+   "min_step_count_between_reset": 0
+  },
+  "hand_physics_material": {
+   "func": "isaaclab.envs.mdp.events:randomize_rigid_body_material",
+   "params": {
+    "asset_cfg": {
+     "name": "robot",
+     "joint_names": null,
+     "joint_ids": "slice(None, None, None)",
+     "fixed_tendon_names": null,
+     "fixed_tendon_ids": "slice(None, None, None)",
+     "body_names": [
+      ".*_arm_l7",
+      ".*_thumb_MC",
+      ".*_thumb_PP",
+      ".*_thumb_DP",
+      ".*_index_PP",
+      ".*_index_MP",
+      ".*_index_DP",
+      ".*_middle_PP",
+      ".*_middle_MP",
+      ".*_middle_DP",
+      ".*_ring_PP",
+      ".*_ring_MP",
+      ".*_ring_DP",
+      ".*_pinky_MC",
+      ".*_pinky_PP",
+      ".*_pinky_MP",
+      ".*_pinky_DP"
+     ],
+     "body_ids": "slice(None, None, None)",
+     "object_collection_names": null,
+     "object_collection_ids": "slice(None, None, None)",
+     "preserve_order": false
+    },
+    "static_friction_range": [
+     2.0,
+     2.01
+    ],
+    "dynamic_friction_range": [
+     2.0,
+     2.01
+    ],
+    "restitution_range": [
+     0.0,
+     0.0
+    ],
+    "num_buckets": 64
+   },
+   "mode": "startup",
+   "interval_range_s": null,
+   "is_global_time": false,
+   "min_step_count_between_reset": 0
+  }
+ },
+ "curriculum": {
+  "voc_curriculum": {
+   "func": "robotic_grounding.tasks.v2d_whole_body.mdp.curriculum.curriculum:FixedTimestepCurriculum",
+   "params": {
+    "command_name": "motion",
+    "num_steps_per_env": 24,
+    "timestep_schedule": [
+     1250,
+     2500,
+     3750,
+     5000,
+     6250,
+     7500,
+     8750,
+     10000,
+     11250,
+     12500
+    ],
+    "virtual_object_control_scale_factor": [
+     1.0,
+     0.9,
+     0.8,
+     0.7,
+     0.6,
+     0.5,
+     0.4,
+     0.3,
+     0.2,
+     0.1,
+     0.0
+    ]
+   }
+  }
+ },
+ "command": {
+  "class_type": "robotic_grounding.tasks.v2d_whole_body.mdp.commands.tracking_command:TrackingCommand",
+  "resampling_time_range": [
+   1000000.0,
+   1000000.0
+  ],
+  "debug_vis": true,
+  "asset_name": "robot",
+  "object_name": "tissue_box",
+  "object_body_names": [
+   "tissue_box"
+  ],
+  "motion_file": "/work/b3_tbseed/fast/human_motion_data/ego_recon/processed/sequence_id=tissue_box/robot_name=vega_sharpa",
+  "motion_start_frame": 0,
+  "motion_end_frame": -1,
+  "object_pos_offset": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "robot_anchor_pos_offset": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dt": 0.05,
+  "motion_speed": 0.5,
+  "anchor_body_name": "root",
+  "joint_names": [
+   ".*"
+  ],
+  "file_joint_names": null,
+  "ee_link_names": [
+   "L_arm_l7",
+   "R_arm_l7"
+  ],
+  "num_future_frames": 10,
+  "dt_future_frames": 0.1,
+  "left_wrist_body_name": "L_arm_l7",
+  "right_wrist_body_name": "R_arm_l7",
+  "fingertip_body_name": ".*_DP",
+  "finger_joint_names": [
+   "right_thumb_CMC_FE",
+   "right_thumb_CMC_AA",
+   "right_thumb_MCP_FE",
+   "right_thumb_MCP_AA",
+   "right_thumb_IP",
+   "right_index_MCP_FE",
+   "right_index_MCP_AA",
+   "right_index_PIP",
+   "right_index_DIP",
+   "right_middle_MCP_FE",
+   "right_middle_MCP_AA",
+   "right_middle_PIP",
+   "right_middle_DIP",
+   "right_ring_MCP_FE",
+   "right_ring_MCP_AA",
+   "right_ring_PIP",
+   "right_ring_DIP",
+   "right_pinky_CMC",
+   "right_pinky_MCP_FE",
+   "right_pinky_MCP_AA",
+   "right_pinky_PIP",
+   "right_pinky_DIP",
+   "left_thumb_CMC_FE",
+   "left_thumb_CMC_AA",
+   "left_thumb_MCP_FE",
+   "left_thumb_MCP_AA",
+   "left_thumb_IP",
+   "left_index_MCP_FE",
+   "left_index_MCP_AA",
+   "left_index_PIP",
+   "left_index_DIP",
+   "left_middle_MCP_FE",
+   "left_middle_MCP_AA",
+   "left_middle_PIP",
+   "left_middle_DIP",
+   "left_ring_MCP_FE",
+   "left_ring_MCP_AA",
+   "left_ring_PIP",
+   "left_ring_DIP",
+   "left_pinky_CMC",
+   "left_pinky_MCP_FE",
+   "left_pinky_MCP_AA",
+   "left_pinky_PIP",
+   "left_pinky_DIP"
+  ],
+  "hand_contact_bodies": [
+   ".*_arm_l7",
+   ".*_thumb_MC",
+   ".*_thumb_PP",
+   ".*_thumb_DP",
+   ".*_index_PP",
+   ".*_index_MP",
+   ".*_index_DP",
+   ".*_middle_PP",
+   ".*_middle_MP",
+   ".*_middle_DP",
+   ".*_ring_PP",
+   ".*_ring_MP",
+   ".*_ring_DP",
+   ".*_pinky_MC",
+   ".*_pinky_PP",
+   ".*_pinky_MP",
+   ".*_pinky_DP"
+  ],
+  "hand_frame_target_bodies": [
+   "L_arm_l7",
+   "R_arm_l7"
+  ],
+  "object_contact_sensor_names": [
+   "tissue_box_object_to_right_contact_sensor",
+   "tissue_box_object_to_left_contact_sensor"
+  ],
+  "initial_virtual_object_control_curriculum_scale": 1.0,
+  "voc_decay_steps": 10,
+  "voc_reset_scale": 1.0,
+  "action_history_length": 3,
+  "always_reset_to_first_frame": false,
+  "reset_freeze_steps": 50,
+  "reset_shoulder_spread": 0.0,
+  "reset_root_height_min": null,
+  "reset_yaw_only": false,
+  "num_wrench_space_basis_samples": 512,
+  "num_friction_cone_edges": 8,
+  "friction_coefficients": 0.1,
+  "pose_visualizer_cfg": {
+   "prim_path": "/Visuals/Command/pose_marker",
+   "markers": {
+    "frame": {
+     "func": "isaaclab.sim.spawners.from_files.from_files:spawn_from_usd",
+     "visible": true,
+     "semantic_tags": null,
+     "copy_from_source": true,
+     "mass_props": null,
+     "deformable_props": null,
+     "rigid_props": null,
+     "collision_props": null,
+     "activate_contact_sensors": false,
+     "scale": [
+      0.15,
+      0.15,
+      0.15
+     ],
+     "articulation_props": null,
+     "fixed_tendons_props": null,
+     "spatial_tendons_props": null,
+     "joint_drive_props": null,
+     "visual_material_path": "material",
+     "visual_material": null,
+     "usd_path": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Props/UIElements/frame_prim.usd",
+     "variants": null
+    },
+    "connecting_line": {
+     "func": "isaaclab.sim.spawners.shapes.shapes:spawn_cylinder",
+     "visible": true,
+     "semantic_tags": null,
+     "copy_from_source": true,
+     "mass_props": null,
+     "rigid_props": null,
+     "collision_props": null,
+     "activate_contact_sensors": false,
+     "visual_material_path": "material",
+     "visual_material": {
+      "func": "isaaclab.sim.spawners.materials.visual_materials:spawn_preview_surface",
+      "diffuse_color": [
+       1.0,
+       1.0,
+       0.0
+      ],
+      "emissive_color": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "opacity": 1.0
+     },
+     "physics_material_path": "material",
+     "physics_material": null,
+     "radius": 0.002,
+     "height": 1.0,
+     "axis": "Z"
+    }
+   }
+  },
+  "reset_to_first_frame_prob": 0.0,
+  "reset_finger_openness": 0.7
+ },
+ "robot": {
+  "class_type": "isaaclab.assets.articulation.articulation:Articulation",
+  "prim_path": "{ENV_REGEX_NS}/Robot",
+  "spawn": {
+   "asset_path": "/workspace/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets/urdfs/vega_sharpa/vega_sharpa_reduced.urdf",
+   "usd_dir": null,
+   "usd_file_name": null,
+   "force_usd_conversion": false,
+   "make_instanceable": true,
+   "fix_base": true,
+   "root_link_name": null,
+   "link_density": 0.0,
+   "merge_fixed_joints": true,
+   "convert_mimic_joints_to_normal_joints": false,
+   "joint_drive": {
+    "drive_type": "force",
+    "target_type": "position",
+    "gains": {
+     "stiffness": 0,
+     "damping": 0
+    }
+   },
+   "collider_type": "convex_hull",
+   "self_collision": false,
+   "replace_cylinders_with_capsules": false,
+   "collision_from_visuals": false,
+   "func": "isaaclab.sim.spawners.from_files.from_files:spawn_from_urdf",
+   "visible": true,
+   "semantic_tags": null,
+   "copy_from_source": true,
+   "mass_props": null,
+   "deformable_props": null,
+   "rigid_props": {
+    "rigid_body_enabled": null,
+    "kinematic_enabled": null,
+    "disable_gravity": true,
+    "linear_damping": 0.01,
+    "angular_damping": 0.01,
+    "max_linear_velocity": 1000.0,
+    "max_angular_velocity": 3666.9298888372687,
+    "max_depenetration_velocity": 1.0,
+    "max_contact_impulse": 1000.0,
+    "enable_gyroscopic_forces": false,
+    "retain_accelerations": false,
+    "solver_position_iteration_count": null,
+    "solver_velocity_iteration_count": null,
+    "sleep_threshold": null,
+    "stabilization_threshold": null
+   },
+   "collision_props": null,
+   "activate_contact_sensors": true,
+   "scale": null,
+   "articulation_props": {
+    "articulation_enabled": null,
+    "enabled_self_collisions": true,
+    "solver_position_iteration_count": 8,
+    "solver_velocity_iteration_count": 0,
+    "sleep_threshold": 0.005,
+    "stabilization_threshold": 0.0005,
+    "fix_root_link": null
+   },
+   "fixed_tendons_props": null,
+   "spatial_tendons_props": null,
+   "joint_drive_props": null,
+   "visual_material_path": "material",
+   "visual_material": null
+  },
+  "init_state": {
+   "pos": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "rot": [
+    1.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "lin_vel": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "ang_vel": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "joint_pos": {
+    "R_arm_j1": -1.4659,
+    "R_arm_j2": -0.9913,
+    "R_arm_j3": -0.8333,
+    "R_arm_j4": -2.773,
+    "R_arm_j5": -1.6266,
+    "R_arm_j6": -1.0706,
+    "R_arm_j7": 0.668,
+    "L_arm_j1": 1.4659,
+    "L_arm_j2": 0.9913,
+    "L_arm_j3": 0.8333,
+    "L_arm_j4": -2.773,
+    "L_arm_j5": 1.6266,
+    "L_arm_j6": 1.0706,
+    "L_arm_j7": -0.668
+   },
+   "joint_vel": {
+    ".*": 0.0
+   }
+  },
+  "collision_group": 0,
+  "debug_vis": false,
+  "articulation_root_prim_path": null,
+  "soft_joint_pos_limit_factor": 1.0,
+  "actuators": {
+   "arm": {
+    "class_type": "isaaclab.actuators.actuator_pd:DelayedPDActuator",
+    "joint_names_expr": [
+     ".*_arm_j1",
+     ".*_arm_j2",
+     ".*_arm_j3",
+     ".*_arm_j4",
+     ".*_arm_j5",
+     ".*_arm_j6",
+     ".*_arm_j7"
+    ],
+    "effort_limit": {
+     ".*_arm_j1": 100.0,
+     ".*_arm_j2": 100.0,
+     ".*_arm_j3": 80.0,
+     ".*_arm_j4": 80.0,
+     ".*_arm_j5": 25.0,
+     ".*_arm_j6": 25.0,
+     ".*_arm_j7": 25.0
+    },
+    "velocity_limit": null,
+    "effort_limit_sim": {
+     ".*_arm_j1": 100.0,
+     ".*_arm_j2": 100.0,
+     ".*_arm_j3": 80.0,
+     ".*_arm_j4": 80.0,
+     ".*_arm_j5": 25.0,
+     ".*_arm_j6": 25.0,
+     ".*_arm_j7": 25.0
+    },
+    "velocity_limit_sim": {
+     ".*_arm_j1": 2.4,
+     ".*_arm_j2": 2.4,
+     ".*_arm_j3": 2.4,
+     ".*_arm_j4": 2.4,
+     ".*_arm_j5": 2.4,
+     ".*_arm_j6": 2.4,
+     ".*_arm_j7": 2.4
+    },
+    "stiffness": {
+     ".*_arm_j1": 56.578,
+     ".*_arm_j2": 24.332,
+     ".*_arm_j3": 28.29,
+     ".*_arm_j4": 26.164,
+     ".*_arm_j5": 1.482,
+     ".*_arm_j6": 4.233,
+     ".*_arm_j7": 4.233
+    },
+    "damping": {
+     ".*_arm_j1": 47.15,
+     ".*_arm_j2": 20.378,
+     ".*_arm_j3": 23.488,
+     ".*_arm_j4": 21.74,
+     ".*_arm_j5": 1.252,
+     ".*_arm_j6": 3.541,
+     ".*_arm_j7": 3.541
+    },
+    "armature": {
+     ".*_arm_j1": 0.551,
+     ".*_arm_j2": 0.551,
+     ".*_arm_j3": 0.19072,
+     ".*_arm_j4": 0.19072,
+     ".*_arm_j5": 0.07232,
+     ".*_arm_j6": 0.07232,
+     ".*_arm_j7": 0.07232
+    },
+    "friction": null,
+    "dynamic_friction": null,
+    "viscous_friction": null,
+    "min_delay": 4,
+    "max_delay": 4
+   },
+   "fingers": {
+    "class_type": "isaaclab.actuators.actuator_pd:ImplicitActuator",
+    "joint_names_expr": [
+     ".*_CMC_FE",
+     ".*_CMC_AA",
+     ".*_pinky_CMC",
+     ".*_MCP_FE",
+     ".*_MCP_AA",
+     ".*_IP",
+     ".*_PIP",
+     ".*_DIP"
+    ],
+    "effort_limit": null,
+    "velocity_limit": null,
+    "effort_limit_sim": {
+     ".*_CMC_FE": 3.3,
+     ".*_CMC_AA": 3.3,
+     ".*_pinky_CMC": 0.5285,
+     ".*_MCP_FE": 1.864,
+     ".*_MCP_AA": 1.864,
+     ".*_IP": 0.638,
+     ".*_PIP": 0.638,
+     ".*_DIP": 0.18937
+    },
+    "velocity_limit_sim": {
+     ".*_CMC_FE": 11.8408,
+     ".*_CMC_AA": 11.8408,
+     ".*_pinky_CMC": 35.0742,
+     ".*_MCP_FE": 16.0769,
+     ".*_MCP_AA": 16.0769,
+     ".*_IP": 11.6183,
+     ".*_PIP": 11.6183,
+     ".*_DIP": 14.6659
+    },
+    "stiffness": {
+     ".*_CMC_FE": 6.95456,
+     ".*_CMC_AA": 13.20095,
+     ".*_pinky_CMC": 1.38026,
+     ".*_MCP_FE": 4.76002,
+     ".*_MCP_AA": 6.62167,
+     ".*_IP": 0.90757,
+     ".*_PIP": 0.90757,
+     ".*_DIP": 0.90413
+    },
+    "damping": {
+     ".*_CMC_FE": 0.240986,
+     ".*_CMC_AA": 0.45164,
+     ".*_pinky_CMC": 0.039248,
+     ".*_MCP_FE": 0.183003,
+     ".*_MCP_AA": 0.207984,
+     ".*_IP": 0.039992,
+     ".*_PIP": 0.039992,
+     ".*_DIP": 0.031513
+    },
+    "armature": {
+     ".*_CMC_FE": 0.0032,
+     ".*_CMC_AA": 0.0032,
+     ".*_pinky_CMC": 0.00012,
+     ".*_MCP_FE": 0.00265,
+     ".*_MCP_AA": 0.00265,
+     ".*_IP": 0.00061,
+     ".*_PIP": 0.00061,
+     ".*_DIP": 0.00042
+    },
+    "friction": {
+     ".*_CMC_FE": 0.132,
+     ".*_CMC_AA": 0.132,
+     ".*_pinky_CMC": 0.013,
+     ".*_MCP_FE": 0.104,
+     ".*_MCP_AA": 0.104,
+     ".*_IP": 0.02476,
+     ".*_PIP": 0.02476,
+     ".*_DIP": 0.000418
+    },
+    "dynamic_friction": null,
+    "viscous_friction": null
+   }
+  },
+  "actuator_value_resolution_debug_print": false
+ },
+ "object_solver_iterations": [
+  8,
+  0
+ ],
+ "runtime": {
+  "step_dt": 0.05,
+  "action_dim": 58,
+  "observation_dims": {
+   "policy": [
+    445
+   ]
+  },
+  "observation_terms": {
+   "policy": {
+    "joint_pos_rel": [
+     58
+    ],
+    "joint_vel_rel": [
+     58
+    ],
+    "motion_joint_pos_delta": [
+     174
+    ],
+    "motion_ee_pos_delta": [
+     18
+    ],
+    "motion_ee_quat_delta": [
+     36
+    ],
+    "left_hand_object_transform": [
+     7
+    ],
+    "right_hand_object_transform": [
+     7
+    ],
+    "object_pose_delta": [
+     7
+    ],
+    "wrist_position_e": [
+     6
+    ],
+    "wrist_wxyz_e": [
+     8
+    ],
+    "object_position_e": [
+     3
+    ],
+    "object_wxyz_e": [
+     4
+    ],
+    "trajectory_progress": [
+     1
+    ],
+    "last_action": [
+     58
+    ]
+   }
+  },
+  "reward_terms": [
+   "termination_penalty",
+   "motion_object_keypoints_tracking_exp",
+   "motion_hand_keypoints_gaussian_exp",
+   "force_closure",
+   "action_rate",
+   "action_l2",
+   "motion_finger_joint_pos_gaussian_exp",
+   "motion_contact_tracking_gaussian_exp",
+   "contact_wrench_support_reward",
+   "unintended_contact_penalty",
+   "missed_contact_penalty"
+  ],
+  "termination_terms": [
+   "timeout",
+   "hand_wrist_away",
+   "object_pos_error",
+   "object_quat_error",
+   "robot_state_diverged"
+  ],
+  "joint_names": [
+   "L_arm_j1",
+   "R_arm_j1",
+   "L_arm_j2",
+   "R_arm_j2",
+   "L_arm_j3",
+   "R_arm_j3",
+   "L_arm_j4",
+   "R_arm_j4",
+   "L_arm_j5",
+   "R_arm_j5",
+   "L_arm_j6",
+   "R_arm_j6",
+   "L_arm_j7",
+   "R_arm_j7",
+   "left_index_MCP_FE",
+   "left_middle_MCP_FE",
+   "left_pinky_CMC",
+   "left_ring_MCP_FE",
+   "left_thumb_CMC_FE",
+   "right_index_MCP_FE",
+   "right_middle_MCP_FE",
+   "right_pinky_CMC",
+   "right_ring_MCP_FE",
+   "right_thumb_CMC_FE",
+   "left_index_MCP_AA",
+   "left_middle_MCP_AA",
+   "left_pinky_MCP_FE",
+   "left_ring_MCP_AA",
+   "left_thumb_CMC_AA",
+   "right_index_MCP_AA",
+   "right_middle_MCP_AA",
+   "right_pinky_MCP_FE",
+   "right_ring_MCP_AA",
+   "right_thumb_CMC_AA",
+   "left_index_PIP",
+   "left_middle_PIP",
+   "left_pinky_MCP_AA",
+   "left_ring_PIP",
+   "left_thumb_MCP_FE",
+   "right_index_PIP",
+   "right_middle_PIP",
+   "right_pinky_MCP_AA",
+   "right_ring_PIP",
+   "right_thumb_MCP_FE",
+   "left_index_DIP",
+   "left_middle_DIP",
+   "left_pinky_PIP",
+   "left_ring_DIP",
+   "left_thumb_MCP_AA",
+   "right_index_DIP",
+   "right_middle_DIP",
+   "right_pinky_PIP",
+   "right_ring_DIP",
+   "right_thumb_MCP_AA",
+   "left_pinky_DIP",
+   "left_thumb_IP",
+   "right_pinky_DIP",
+   "right_thumb_IP"
+  ],
+  "trajectory_end_timestep": 518,
+  "num_timesteps": 519,
+  "train_max_episode_steps": 400
+ }
+}

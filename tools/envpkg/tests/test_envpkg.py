@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,12 +23,14 @@ from scipy.spatial.transform import Rotation
 from tools.envpkg.build import build_package, parse_support_usda
 from tools.envpkg.common import ContractError, schema_errors, sha256_file
 from tools.envpkg.intake import validate_intake
+from tools.envpkg.success import lift_hold
+from tools.envpkg.task import load_task_spec
 from tools.envpkg.validate import validate_package
 
 REPO = Path(__file__).resolve().parents[3]
 SAMPLE_VIDEO = REPO / "reconstruction/assets/tissue_box.mp4"
 SEQ = "box"
-N, FPS, ROBOT_FPS = 31, 30.0, 50.0
+N, FPS, ROBOT_FPS = 91, 30.0, 50.0
 N_ROBOT = int(round((N - 1) / FPS * ROBOT_FPS)) + 1
 T_TRACKS = np.array([0.05, -0.4, 0.5])
 T_PLACE = np.array([[-1.0, 0, 0, -0.04], [0, -1.0, 0, 0.56], [0, 0, 1.0, 1.28], [0, 0, 0, 1.0]])
@@ -62,12 +65,32 @@ def _write_row(path: Path, row: dict) -> None:
     pq.write_table(pa.Table.from_pylist([row]), path)
 
 
+PROFILE = json.loads((REPO / "robotic_grounding/groot_finetune/task_profiles/tissue_box_lift_hold.json").read_text())
+ENV_SPEC = json.loads((Path(__file__).parent / "data/env_spec_vega_sharpa.json").read_text())
+
+
+def env_spec(control_steps: int, joints: int, **edit) -> dict:
+    """The real Vega env dump (b3_tbseed), re-dimensioned for the synthetic clip."""
+    spec = json.loads(json.dumps(ENV_SPEC))
+    spec["runtime"].update(trajectory_end_timestep=control_steps - 1, num_timesteps=control_steps,
+                           action_dim=joints, joint_names=[f"j{i}" for i in range(joints)])
+    for key, value in edit.items():
+        spec[key] = value
+    return spec
+
+
+def lift_profile(t: np.ndarray, height: float = 0.15) -> np.ndarray:
+    """Rest, lift `height` m over 0.3 s, hold to 1.9 s, put down by 2.4 s (gently), rest."""
+    return np.interp(t, [0.0, 0.5, 0.8, 1.9, 2.4, 3.0], [0.0, 0.0, height, height, 0.0, 0.0])
+
+
 def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, track_rotation_deg: float = 0.0,
-                  gates: dict | None = None) -> Path:
+                  gates: dict | None = None, lift_m: float = 0.15, with_env_spec: bool = True,
+                  env_spec_edit: dict | None = None) -> Path:
     t = np.arange(N) / FPS
     world = np.tile(np.eye(4), (N, 1, 1))
     world[:, :3, :3] = Rotation.from_euler("z", (20 * t)[:, None], degrees=True).as_matrix()
-    world[:, :3, 3] = np.stack([0.1 * t, 0.2 + 0.0 * t, 0.7 + 0.05 * t], axis=1)
+    world[:, :3, 3] = np.stack([0.1 * t, 0.2 + 0.0 * t, 0.7 + lift_profile(t, lift_m)], axis=1)
     bundle = root / "reconstruction/result_slam_gravity_aligned"
     bundle.mkdir(parents=True)
     hands = {}
@@ -132,6 +155,9 @@ def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, t
         "schema": "v2d_replay_metrics_v1", "flag": flag, "flag_reasons": ["wrist_pos_p95_m"] if flag else [],
         "completion": 0.33,
     }))
+    if with_env_spec:
+        steps = int(round((N - 1) / FPS / 0.025)) + 1
+        (root / "simulate/vega/env_spec.json").write_text(json.dumps(env_spec(steps, 3, **(env_spec_edit or {}))))
     (root / "qa").mkdir()
     for gate, verdict in (gates or {"triage": "accept", "reconstruction": "pass"}).items():
         if verdict is not None:
@@ -139,7 +165,8 @@ def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, t
                 "schema": f"{gate}/v1", "verdict": verdict, "reasons": ["too blurred"] if verdict == "reject" else []}))
     if provenance:
         (root / "e2e_config.json").write_text(json.dumps({"workflow": {
-            "sequence_id": SEQ, "instruction": "lift the box", "object_prompt": "a box", "task_profile": "box_lift"}}))
+            "sequence_id": SEQ, "instruction": "lift the box", "object_prompt": "a box", "task_profile": "box_lift"},
+            "contracts": {"task": PROFILE}}))
         stage_record = {"completed_at": "2026-11-21T00:00:00+00:00", "repository": {"revision": "abc", "runtime_tree_sha256": "def"}}
         (root / "run_manifest.json").write_text(json.dumps({"stages": {
             "reconstruct": {**stage_record, "inputs": {"/v.mp4": {"sha256": "0" * 64, "size": 10}}},
@@ -169,6 +196,8 @@ class PackageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
+        self.profile = self.tmp / "profile.json"
+        self.profile.write_text(json.dumps(PROFILE))
         git = mock.patch("tools.envpkg.build.git_state", return_value=("f" * 40, False))
         git.start()
         self.addCleanup(git.stop)
@@ -176,6 +205,8 @@ class PackageTest(unittest.TestCase):
     def build(self, **run_kwargs) -> Path:
         run = make_run_root(self.tmp / "run", **run_kwargs)
         build_kwargs = {"allow_missing_provenance": not run_kwargs.get("provenance", False)}
+        if not run_kwargs.get("provenance", False):
+            build_kwargs["task_profile"] = self.profile
         if run_kwargs.get("flag"):
             build_kwargs["allow_flagged"] = True
         return build_package(run, self.tmp / "pkg", **build_kwargs)
@@ -234,6 +265,74 @@ class PackageTest(unittest.TestCase):
         manifest2 = json.loads((package2 / "manifest.json").read_text())
         self.assertEqual((manifest2["qa"]["verdict"], manifest2["qa"]["gates"]["triage"]["status"]), ("incomplete", "not_run"))
         self.assertRejected(package2, "delivery requires 'pass'", strict=True)
+
+    def test_task_spec(self) -> None:
+        package = self.build(provenance=True)
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(manifest["task"], {"spec": "task/task.json", "schema": "task_spec/v1"})
+        spec = load_task_spec(package)
+        part = spec["robots"]["vega_sharpa"]
+        self.assertEqual(spec["task_id"], f"{manifest['env_id']}.tissue_box_lift_hold")
+        self.assertEqual((part["reference"]["control_steps"], part["episode"]["evaluation"]["max_steps"]), (121, 121))
+        self.assertTrue(part["reference_check"]["success"])
+        self.assertEqual({r["name"]: r["weight"] for r in part["rewards"]}["force_closure"], 5.0)
+        self.assertEqual(part["action"]["dim"], 3)
+        self.assertEqual(part["assist"]["virtual_object_control"]["curriculum"]["virtual_object_control_scale_factor"][0], 1.0)
+        self.assertTrue(validate_package(package, strict=True).ok)
+
+        def redefine(m):
+            path = package / "task/task.json"
+            task = json.loads(path.read_text())
+            task["robots"]["vega_sharpa"]["rewards"][0]["definition"] = "something else"
+            path.write_text(json.dumps(task))
+
+        rehash(package, redefine)
+        self.assertRejected(package, "is not described as catalogued")
+
+    def test_episode_cap_follows_the_terminations(self) -> None:
+        self.assertIsNone(load_task_spec(self.build())["robots"]["vega_sharpa"]["episode"]["train"]["max_steps"])
+        terms = dict(ENV_SPEC["terminations"])
+        terms["time_out"] = {"func": "isaaclab.envs.mdp.terminations:time_out", "time_out": True, "params": {}}
+        run = make_run_root(self.tmp / "capped", env_spec_edit={"terminations": terms})
+        part = load_task_spec(build_package(run, self.tmp / "pkg2", allow_missing_provenance=True,
+                                            task_profile=self.profile))["robots"]["vega_sharpa"]
+        self.assertEqual((part["episode"]["train"]["max_steps"], part["notes"]), (400, []))  # 400 > 121 + 50
+        runtime = {**env_spec(121, 3)["runtime"], "train_max_episode_steps": 100}
+        run = make_run_root(self.tmp / "short", env_spec_edit={"terminations": terms, "runtime": runtime})
+        part = load_task_spec(build_package(run, self.tmp / "pkg3", allow_missing_provenance=True,
+                                            task_profile=self.profile))["robots"]["vega_sharpa"]
+        self.assertIn("capped at 100 steps", part["notes"][0])
+
+    def test_task_spec_refusals(self) -> None:
+        run = make_run_root(self.tmp / "flat", lift_m=0.0)
+        with self.assertRaisesRegex(ContractError, "reference motion itself fails the lift_hold"):
+            build_package(run, self.tmp / "pkg", allow_missing_provenance=True, task_profile=self.profile)
+        rewards = dict(ENV_SPEC["rewards"])
+        rewards["novel"] = {"func": "my.module:novel_reward", "weight": 1.0, "params": {}}
+        run = make_run_root(self.tmp / "novel", env_spec_edit={"rewards": rewards})
+        with self.assertRaisesRegex(ContractError, "novel_reward, which has no definition"):
+            build_package(run, self.tmp / "pkg", allow_missing_provenance=True, task_profile=self.profile)
+        run = make_run_root(self.tmp / "nospec", with_env_spec=False)
+        package = build_package(run, self.tmp / "pkg", allow_missing_provenance=True, task_profile=self.profile)
+        self.assertIsNone(json.loads((package / "manifest.json").read_text())["task"])
+        self.assertRejected(package, "no task spec attached", strict=True)
+
+    def test_lift_hold_matches_the_reference_implementation(self) -> None:
+        sys.path.insert(0, str(REPO / "robotic_grounding"))
+        from groot_finetune.closed_loop.evaluation import evaluate_lift_hold
+        from groot_finetune.task_profile import LiftHoldEvaluator
+
+        params = {k: v for k, v in PROFILE["evaluator"].items() if k != "id"}
+        config = LiftHoldEvaluator(**params)
+        rng = np.random.default_rng(0)
+        traces = [lift_profile(np.linspace(0, 3, n), h) + rng.normal(0, noise, n)
+                  for n, h, noise in zip(rng.integers(2, 160, 150), rng.uniform(0, 0.25, 150), rng.uniform(0, 0.004, 150))]
+        traces += [np.cumsum(rng.normal(0, 0.01, n)) for n in rng.integers(1, 120, 50)]
+        for trace in traces:
+            a, b = evaluate_lift_hold(trace, config=config), lift_hold(trace, params)
+            self.assertEqual((a.success, a.lift_hold_success, a.max_hold_steps), (b["success"], b["lift_hold_success"], b["max_hold_steps"]))
+            self.assertAlmostEqual(a.max_lift_m, b["max_lift_m"], places=4)
+        self.assertGreaterEqual(sum(lift_hold(t, params)["success"] for t in traces), 5)  # both outcomes covered
 
     def test_build_refuses_tracks_in_a_rotated_frame(self) -> None:
         run = make_run_root(self.tmp / "run", track_rotation_deg=5.0)

@@ -291,9 +291,12 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
     if manifest["qa"]["verdict"] != verdict:
         err(f"qa.verdict {manifest['qa']['verdict']!r}, QA statuses imply {verdict!r}")
 
+    if manifest["task"] is not None:
+        _check_task(root, manifest, listed, report)
+
     provenance = manifest["provenance"]
     if manifest["task"] is None:
-        warn("no task spec attached yet (stage 10)")
+        (err if strict else warn)("no task spec attached (task/task.json)")
     if not provenance["complete"]:
         (err if strict else warn)(f"provenance incomplete: missing {', '.join(provenance.get('missing', []))}")
     if strict:
@@ -304,3 +307,76 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
         if manifest["source"]["video_sha256"] is None:
             err("source video hash missing")
     return report
+
+
+def _check_task(root: Path, manifest: dict[str, Any], listed: dict[str, Any], report: Report) -> None:
+    """task_spec/v1: schema, references, definitions as catalogued, timing and dimensions
+    consistent, and the success criterion recomputed on the reference motion."""
+    from .common import TASK_SCHEMA
+    from .success import EVALUATORS
+    from .task import ACTIONS, OBSERVATIONS, REWARDS, SUCCESS, TERMINATIONS, reference_object_heights
+
+    err = report.errors.append
+    path = manifest["task"]["spec"]
+    if path not in listed:
+        err(f"task spec {path} is not a package file")
+        return
+    spec = json.loads((root / path).read_text())
+    errors = schema_errors(TASK_SCHEMA, spec)
+    if errors:
+        report.errors += errors
+        return
+    success = spec["success"]
+    if success["definition"] != SUCCESS[success["evaluator"]]:
+        err(f"task: success definition differs from the catalogued {success['evaluator']} definition")
+    for robot, part in spec["robots"].items():
+        label = f"task.robots.{robot}"
+        if robot not in manifest["robots"]:
+            err(f"{label}: robot not in the package")
+            continue
+        meta = manifest["robots"][robot]["motion"]
+        if part["env_spec"] not in listed:
+            err(f"{label}: env_spec {part['env_spec']} is not a package file")
+        ref = part["reference"]
+        if ref["motion"] != meta["path"] or ref["frames"] != meta["n_frames"] or abs(ref["fps"] - meta["fps"]) > 1e-6:
+            err(f"{label}: reference {ref} does not match the package motion {meta}")
+        timing = part["timing"]
+        if abs(timing["control_dt_s"] - timing["physics_dt_s"] * timing["decimation"]) > 1e-9:
+            err(f"{label}: control_dt_s != physics_dt_s x decimation")
+        expected = int(np.floor((ref["frames"] - 1) / ref["fps"] / (timing["control_dt_s"] * ref["playback_speed"]) + 1e-6)) + 1
+        if abs(expected - ref["control_steps"]) > 1:
+            err(f"{label}: {ref['control_steps']} control steps, the motion plays for {expected}")
+        if part["episode"]["evaluation"]["max_steps"] != ref["control_steps"]:
+            err(f"{label}: evaluation max_steps {part['episode']['evaluation']['max_steps']} != reference control steps")
+        for group, catalog in (("rewards", REWARDS), ("terminations", TERMINATIONS)):
+            for term in part[group]:
+                short = term["function"].rsplit(":", 1)[1]
+                if catalog.get(short) != term["definition"]:
+                    err(f"{label}: {group} term {term['name']} ({short}) is not described as catalogued")
+        obs = part["observations"]
+        for term in obs["terms"]:
+            if OBSERVATIONS.get(term["function"].rsplit(":", 1)[1]) != term["definition"]:
+                err(f"{label}: observation {term['name']} is not described as catalogued")
+        dims = sum(int(np.prod(term["dim"])) for term in obs["terms"] if term["dim"])
+        if obs["dim"] and dims != int(np.prod(obs["dim"])):
+            err(f"{label}: observation terms sum to {dims}, observation dim {obs['dim']}")
+        action = part["action"]
+        if action["joint_names"] and len(action["joint_names"]) != action["dim"]:
+            err(f"{label}: action dim {action['dim']} != {len(action['joint_names'])} joints")
+        if action["dim"] != manifest["robots"][robot]["motion"]["joint_count"]:
+            err(f"{label}: action dim {action['dim']} != motion joint count")
+        for term in action["terms"]:
+            if ACTIONS.get(term["kind"]) != term["definition"]:
+                err(f"{label}: action {term['name']} is not described as catalogued")
+        try:
+            motion = _row(root / ref["motion"])
+            heights = reference_object_heights(motion, control_dt=timing["control_dt_s"], motion_speed=ref["playback_speed"])
+            check = EVALUATORS[success["evaluator"]](heights, success["params"])
+        except Exception as exc:  # noqa: BLE001
+            err(f"{label}: cannot recompute the reference check ({exc})")
+            continue
+        if not check["success"]:
+            err(f"{label}: the reference motion fails the success criterion ({check})")
+        stored = part["reference_check"]
+        if (check["success"], check["steps"]) != (stored["success"], stored["steps"]):
+            err(f"{label}: reference_check {stored} disagrees with the recomputed {check}")

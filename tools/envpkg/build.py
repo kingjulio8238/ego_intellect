@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -169,17 +170,48 @@ def _urdf_physics(urdf: Path) -> dict[str, Any]:
     }
 
 
+def _task(run_root: Path, staging: Path, sequence: str, context: dict[str, Any], first_motion: dict[str, Any],
+          available: dict[str, Path], selected: list[str], instruction: str | None, env_id: str
+          ) -> tuple[dict[str, Any] | None, list[str]]:
+    """task/task.json from each robot's resolved training environment (simulate's env_spec.json)
+    and the clip's task profile; (None, reasons) when either is missing."""
+    from .task import build_task_spec, robot_task
+
+    profile = context.get("profile")
+    if not profile:
+        return None, ["task spec not built: no task profile (run config contracts.task or --task-profile)"]
+    parts, missing = {}, []
+    for robot in selected:
+        source = run_root / "simulate" / ROBOTS[robot].embodiment / "env_spec.json"
+        if not source.is_file():
+            missing.append(robot)
+            continue
+        env_spec = _load_json(source)
+        target = f"task/{robot}/isaaclab_env_spec.json"
+        write_json(staging / target, _scrub_paths(env_spec))
+        _, motion = _one_row(available[robot])
+        parts[robot] = robot_task(env_spec, motion, f"robots/{robot}/motion.parquet", profile["evaluator"], target)
+    if missing:
+        return None, [f"task spec not built: no resolved training environment (simulate env_spec.json) for {missing}"]
+    spec = build_task_spec(env_id=env_id, sequence=sequence, instruction=instruction,
+                           object_name=first_motion["safe_object_name"] or sequence, profile=profile, robots=parts)
+    write_json(staging / "task/task.json", spec)
+    return {"spec": "task/task.json", "schema": spec["schema"]}, []
+
+
 def _provenance(run_root: Path, allow_missing: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     """(provenance block, e2e workflow dict) from run_manifest.json / e2e_config.json."""
     missing: list[str] = []
     stages: dict[str, Any] = {}
     workflow: dict[str, Any] = {}
+    profile: dict[str, Any] | None = None
     parameters: dict[str, Any] = {}
     video: dict[str, Any] = {}
     config_path, manifest_path = run_root / "e2e_config.json", run_root / "run_manifest.json"
     if config_path.is_file():
         config = _load_json(config_path)
         workflow = config.get("workflow", {})
+        profile = (config.get("contracts") or {}).get("task")
         parameters = _scrub_paths(config.get("stage_parameters", {}))
     else:
         missing.append("e2e_config.json")
@@ -214,7 +246,7 @@ def _provenance(run_root: Path, allow_missing: bool) -> tuple[dict[str, Any], di
         "stage_parameters": parameters,
         "builder": {"revision": revision, "dirty": dirty},
     }
-    return block, {"workflow": workflow, "video": video}
+    return block, {"workflow": workflow, "video": video, "profile": profile}
 
 
 def _tracks_transform(npz: Any, tracks: dict[str, Any], path: Path) -> np.ndarray:
@@ -251,10 +283,13 @@ def build_package(
     allow_flagged: bool = False,
     allow_missing_provenance: bool = False,
     force: bool = False,
+    task_profile: Path | None = None,
 ) -> Path:
     """Write env_package/v1 for ``run_root`` to ``out``; returns ``out``. Validates before publishing."""
     run_root = run_root.resolve()
     provenance, context = _provenance(run_root, allow_missing_provenance)
+    if task_profile is not None:
+        context["profile"] = _load_json(task_profile)
     workflow = context["workflow"]
     sequence = sequence_id or workflow.get("sequence_id")
     if not sequence:
@@ -308,6 +343,7 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
     from .validate import validate_package
 
     workflow = context["workflow"]
+    env_id = f"{sequence}-{sha256_file(bundle / 'result.npz')[:10]}"
     (staging / "core/object").mkdir(parents=True)
 
     # Object: the metric mesh every robot motion references, with its URDF and materials.
@@ -412,10 +448,15 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
     if verdict in ("rejected", "flagged") and not allow_flagged:
         raise ContractError(f"QA {verdict} the clip ({'; '.join(reasons)}); pass --allow-flagged to package it anyway")
 
+    task_entry, task_reasons = _task(run_root, staging, sequence, context, first_motion, available, selected,
+                                     instruction or workflow.get("instruction"), env_id)
+    for reason in task_reasons:  # the package is still valid; --strict (delivery) requires the task
+        print(f"warning: {reason}", file=sys.stderr)
+
     video = context["video"]
     manifest: dict[str, Any] = {
         "schema": PACKAGE_SCHEMA,
-        "env_id": f"{sequence}-{sha256_file(bundle / 'result.npz')[:10]}",
+        "env_id": env_id,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "sequence_id": sequence,
         "source": {
@@ -470,7 +511,7 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
             },
         },
         "robots": robot_entries,
-        "task": None,
+        "task": task_entry,
         "simulators": {},
         "qa": {"verdict": verdict, "reasons": reasons, "gates": gates},
         "files": [],
