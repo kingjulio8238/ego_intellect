@@ -583,6 +583,13 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
     print(B.summarize(recon), flush=True)
     t_recon = time.time()
     ok = [r["name"] for r in recon if r["code"] == 0]
+    state_volume.reload()
+    rejected = {
+        r["name"]: B.gate_reasons(r["name"], lambda path: Path(sync.mirror_path(C.MIRROR_ROOT, path)).read_text())
+        for r in recon if r["code"] == B.GATE_REJECTED
+    }
+    for name, reasons in rejected.items():
+        print(f"[v2d-batch {stamp()}] {name}: rejected by a gate (no robot steps): {reasons}", flush=True)
     steps = {item["name"]: item["steps"] for item in (robot or [])}
 
     def robot_one(name: str) -> dict:
@@ -649,6 +656,7 @@ def batch_pipeline(clips: list[dict], max_parallel: int, source_revision: str, b
         "batch_id": batch_id,
         "clips": len(clips),
         "reconstructed": ok,
+        "rejected": rejected,
         "robot": robot_results,
         "delivered": delivered,
         "qa": qa,
@@ -832,6 +840,8 @@ def main(cmd: str = "", argv_json: str = "", break_lock: bool = False) -> None:
     # Tags put this invocation on its own rows in `modal billing report` (real cost per step).
     _tag({"v2d_invocation": invocation, "v2d_command": C.subcommand(argv), "v2d_role": role})
     code = function.remote(argv, revision, break_lock, invocation, app.app_id or "")
+    if code == 3:
+        raise SystemExit(f"run_e2e.sh {C.subcommand(argv)}: the gate rejected this clip (exit 3; see RUN_ROOT/qa/)")
     if code != 0:
         raise SystemExit(f"run_e2e.sh {C.subcommand(argv)} failed with exit code {code}")
 
@@ -880,9 +890,11 @@ def batch(manifest: str, max_parallel: int = 4) -> None:
     record = Path(__file__).resolve().parents[2] / ".e2e" / "batch" / batch_id / "pipeline.json"
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(json.dumps(pipeline, indent=1))
-    print(f"[v2d-batch] delivered {len(pipeline['delivered'])}/{len(results)} | flagged {pipeline['flagged']} | "
-          f"rendered {[r['name'] for r in pipeline['renders'] if r['code'] == 0]} -> {record}")
-    if len(pipeline["delivered"]) != len(results) or any(r["code"] != 0 for r in pipeline["renders"]):
+    rejected = pipeline.get("rejected", {})
+    print(f"[v2d-batch] delivered {len(pipeline['delivered'])}/{len(results)} | rejected by gates {sorted(rejected)} | "
+          f"flagged {pipeline['flagged']} | rendered {[r['name'] for r in pipeline['renders'] if r['code'] == 0]} -> {record}")
+    # A gate rejection is a result, not a failure: only clips that neither delivered nor were rejected failed.
+    if len(pipeline["delivered"]) + len(rejected) != len(results) or any(r["code"] != 0 for r in pipeline["renders"]):
         raise SystemExit("some clips failed")
 
 

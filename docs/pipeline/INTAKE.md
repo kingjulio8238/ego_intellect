@@ -46,7 +46,7 @@ acceptable for acceptance.
 | Content | egocentric, hands and the object in view for most of the clip | tissue_box, airplane |
 
 Reconstruction cost and time grow with the frame count. Clips that pass intake can still be
-rejected by the triage gate (stage 3), which checks content rather than format.
+rejected by the triage gate ([GATES.md](GATES.md)), which checks the content: hands, blur, exposure, frozen frames and cuts.
 
 ## Who uses the optional fields
 

@@ -5,52 +5,158 @@
   "description": "manifest.json at the root of one delivered environment. Contract: docs/pipeline/ENV_PACKAGE.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "env_id", "created_at", "sequence_id", "source", "provenance", "frames", "core", "robots", "task", "simulators", "qa", "files"],
+  "required": [
+    "schema",
+    "env_id",
+    "created_at",
+    "sequence_id",
+    "source",
+    "provenance",
+    "frames",
+    "core",
+    "robots",
+    "task",
+    "simulators",
+    "qa",
+    "files"
+  ],
   "properties": {
-    "schema": {"const": "env_package/v1"},
-    "env_id": {"$ref": "#/$defs/name"},
-    "created_at": {"type": "string", "format": "date-time"},
-    "sequence_id": {"$ref": "#/$defs/name"},
+    "schema": {
+      "const": "env_package/v1"
+    },
+    "env_id": {
+      "$ref": "#/$defs/name"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence_id": {
+      "$ref": "#/$defs/name"
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["video_sha256", "video_bytes", "object_prompt", "instruction", "task_profile"],
+      "required": [
+        "video_sha256",
+        "video_bytes",
+        "object_prompt",
+        "instruction",
+        "task_profile"
+      ],
       "properties": {
-        "video_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
-        "video_bytes": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
-        "object_prompt": {"type": "string", "minLength": 1},
-        "instruction": {"type": ["string", "null"]},
-        "task_profile": {"type": ["string", "null"]}
+        "video_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "video_bytes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "object_prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "instruction": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["complete", "stages", "builder"],
+      "required": [
+        "complete",
+        "stages",
+        "builder"
+      ],
       "properties": {
-        "complete": {"type": "boolean"},
-        "missing": {"type": "array", "items": {"type": "string"}},
+        "complete": {
+          "type": "boolean"
+        },
+        "missing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "stages": {
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["revision", "runtime_tree_sha256", "completed_at"],
+            "required": [
+              "revision",
+              "runtime_tree_sha256",
+              "completed_at"
+            ],
             "properties": {
-              "revision": {"type": ["string", "null"]},
-              "runtime_tree_sha256": {"type": ["string", "null"]},
-              "completed_at": {"type": ["string", "null"]}
+              "revision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runtime_tree_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             }
           }
         },
-        "stage_parameters": {"type": "object"},
+        "stage_parameters": {
+          "type": "object"
+        },
         "builder": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["revision", "dirty"],
+          "required": [
+            "revision",
+            "dirty"
+          ],
           "properties": {
-            "revision": {"type": ["string", "null"]},
-            "dirty": {"type": ["boolean", "null"]}
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "dirty": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
           }
         }
       }
@@ -58,57 +164,129 @@
     "frames": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["world", "tracks"],
+      "required": [
+        "world",
+        "tracks"
+      ],
       "properties": {
         "world": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["description", "up_axis", "units"],
+          "required": [
+            "description",
+            "up_axis",
+            "units"
+          ],
           "properties": {
-            "description": {"type": "string"},
-            "up_axis": {"const": "z"},
-            "units": {"const": "m"}
+            "description": {
+              "type": "string"
+            },
+            "up_axis": {
+              "const": "z"
+            },
+            "units": {
+              "const": "m"
+            }
           }
         },
-        "tracks": {"$ref": "#/$defs/derived_frame"}
+        "tracks": {
+          "$ref": "#/$defs/derived_frame"
+        }
       }
     },
     "core": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["n_frames", "fps", "reconstruction", "human_tracks", "object"],
+      "required": [
+        "n_frames",
+        "fps",
+        "reconstruction",
+        "human_tracks",
+        "object"
+      ],
       "properties": {
-        "n_frames": {"type": "integer", "minimum": 2},
-        "fps": {"type": "number", "exclusiveMinimum": 0},
+        "n_frames": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "fps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "reconstruction": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["result", "manifest", "format", "frame"],
+          "required": [
+            "result",
+            "manifest",
+            "format",
+            "frame"
+          ],
           "properties": {
-            "result": {"$ref": "#/$defs/path"},
-            "manifest": {"$ref": "#/$defs/path"},
-            "format": {"const": "v2d_result_npz/1"},
-            "frame": {"const": "world"}
+            "result": {
+              "$ref": "#/$defs/path"
+            },
+            "manifest": {
+              "$ref": "#/$defs/path"
+            },
+            "format": {
+              "const": "v2d_result_npz/1"
+            },
+            "frame": {
+              "const": "world"
+            }
           }
         },
         "human_tracks": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path", "format", "fps", "n_frames", "frame", "mano"],
+          "required": [
+            "path",
+            "format",
+            "fps",
+            "n_frames",
+            "frame",
+            "mano"
+          ],
           "properties": {
-            "path": {"$ref": "#/$defs/path"},
-            "format": {"const": "v2d_loaded_mano/1"},
-            "fps": {"type": "number", "exclusiveMinimum": 0},
-            "n_frames": {"type": "integer", "minimum": 2},
-            "frame": {"const": "tracks"},
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "format": {
+              "const": "v2d_loaded_mano/1"
+            },
+            "fps": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "n_frames": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "frame": {
+              "const": "tracks"
+            },
             "mano": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["flat_hand_mean", "use_pca", "center_idx"],
+              "required": [
+                "flat_hand_mean",
+                "use_pca",
+                "center_idx"
+              ],
               "properties": {
-                "flat_hand_mean": {"type": "boolean"},
-                "use_pca": {"type": "boolean"},
-                "center_idx": {"type": ["integer", "null"]}
+                "flat_hand_mean": {
+                  "type": "boolean"
+                },
+                "use_pca": {
+                  "type": "boolean"
+                },
+                "center_idx": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
               }
             }
           }
@@ -116,47 +294,126 @@
         "object": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name", "mesh", "materials", "textures", "urdf", "collision", "physics", "bounds_m"],
+          "required": [
+            "name",
+            "mesh",
+            "materials",
+            "textures",
+            "urdf",
+            "collision",
+            "physics",
+            "bounds_m"
+          ],
           "properties": {
-            "name": {"$ref": "#/$defs/name"},
-            "mesh": {"$ref": "#/$defs/path"},
-            "materials": {"type": "array", "items": {"$ref": "#/$defs/path"}},
-            "textures": {"type": "array", "items": {"$ref": "#/$defs/path"}},
-            "urdf": {"$ref": "#/$defs/path"},
+            "name": {
+              "$ref": "#/$defs/name"
+            },
+            "mesh": {
+              "$ref": "#/$defs/path"
+            },
+            "materials": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/path"
+              }
+            },
+            "textures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/path"
+              }
+            },
+            "urdf": {
+              "$ref": "#/$defs/path"
+            },
             "collision": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["mesh", "source"],
+              "required": [
+                "mesh",
+                "source"
+              ],
               "properties": {
-                "mesh": {"$ref": "#/$defs/path"},
-                "source": {"enum": ["visual_mesh", "convex_decomposition"]}
+                "mesh": {
+                  "$ref": "#/$defs/path"
+                },
+                "source": {
+                  "enum": [
+                    "visual_mesh",
+                    "convex_decomposition"
+                  ]
+                }
               }
             },
             "physics": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["mass_kg", "mass_source", "com_m", "inertia_kg_m2", "friction"],
+              "required": [
+                "mass_kg",
+                "mass_source",
+                "com_m",
+                "inertia_kg_m2",
+                "friction"
+              ],
               "properties": {
-                "mass_kg": {"type": "number", "exclusiveMinimum": 0},
-                "mass_source": {"enum": ["default_constant", "estimated", "measured"]},
-                "com_m": {"$ref": "#/$defs/vec3"},
-                "inertia_kg_m2": {"$ref": "#/$defs/mat3"},
+                "mass_kg": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "mass_source": {
+                  "enum": [
+                    "default_constant",
+                    "estimated",
+                    "measured"
+                  ]
+                },
+                "com_m": {
+                  "$ref": "#/$defs/vec3"
+                },
+                "inertia_kg_m2": {
+                  "$ref": "#/$defs/mat3"
+                },
                 "friction": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["static", "dynamic", "restitution", "source"],
+                  "required": [
+                    "static",
+                    "dynamic",
+                    "restitution",
+                    "source"
+                  ],
                   "properties": {
-                    "static": {"type": "number", "minimum": 0},
-                    "dynamic": {"type": "number", "minimum": 0},
-                    "restitution": {"type": "number", "minimum": 0, "maximum": 1},
-                    "source": {"enum": ["physx_default", "estimated", "measured"]}
+                    "static": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "dynamic": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "restitution": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "source": {
+                      "enum": [
+                        "physx_default",
+                        "estimated",
+                        "measured"
+                      ]
+                    }
                   }
                 }
               }
             },
             "bounds_m": {
-              "type": "array", "minItems": 2, "maxItems": 2,
-              "items": {"$ref": "#/$defs/vec3"}
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "$ref": "#/$defs/vec3"
+              }
             }
           }
         }
@@ -165,22 +422,66 @@
     "robots": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"$ref": "#/$defs/name"},
-      "additionalProperties": {"$ref": "#/$defs/robot"}
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/robot"
+      }
     },
-    "task": {"type": "null", "description": "Filled by the task/reward spec stage (stage 10)."},
+    "task": {
+      "type": "null",
+      "description": "Filled by the task/reward spec stage (stage 10)."
+    },
     "simulators": {
       "type": "object",
       "description": "Filled by the Isaac Lab and MuJoCo exporters.",
-      "propertyNames": {"enum": ["isaaclab", "mujoco"]}
+      "propertyNames": {
+        "enum": [
+          "isaaclab",
+          "mujoco"
+        ]
+      }
     },
     "qa": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["verdict", "reasons"],
+      "required": [
+        "verdict",
+        "reasons",
+        "gates"
+      ],
       "properties": {
-        "verdict": {"enum": ["pass", "flagged", "incomplete"]},
-        "reasons": {"type": "array", "items": {"type": "string"}}
+        "verdict": {
+          "enum": [
+            "pass",
+            "rejected",
+            "flagged",
+            "incomplete"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "gates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "triage",
+            "reconstruction"
+          ],
+          "properties": {
+            "triage": {
+              "$ref": "#/$defs/gate"
+            },
+            "reconstruction": {
+              "$ref": "#/$defs/gate"
+            }
+          }
+        }
       }
     },
     "files": {
@@ -189,77 +490,231 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "bytes", "sha256"],
+        "required": [
+          "path",
+          "bytes",
+          "sha256"
+        ],
         "properties": {
-          "path": {"$ref": "#/$defs/path"},
-          "bytes": {"type": "integer", "minimum": 0},
-          "sha256": {"$ref": "#/$defs/sha256"}
+          "path": {
+            "$ref": "#/$defs/path"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
         }
       }
     }
   },
   "$defs": {
-    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$"},
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$"
+    },
     "path": {
       "type": "string",
       "description": "POSIX path relative to the package root; no '..', no leading '/'.",
       "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9_.=/-]+$"
     },
-    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "vec3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
-    "mat3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/vec3"}},
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "mat3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/vec3"
+      }
+    },
     "mat4": {
-      "type": "array", "minItems": 4, "maxItems": 4,
-      "items": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "items": {
+          "type": "number"
+        }
+      }
     },
     "derived_frame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["description", "T_from_world"],
+      "required": [
+        "description",
+        "T_from_world"
+      ],
       "properties": {
-        "description": {"type": "string"},
-        "T_from_world": {"$ref": "#/$defs/mat4", "description": "4x4 rigid transform: p_frame = T @ p_world."}
+        "description": {
+          "type": "string"
+        },
+        "T_from_world": {
+          "$ref": "#/$defs/mat4",
+          "description": "4x4 rigid transform: p_frame = T @ p_world."
+        }
       }
     },
     "robot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model", "frame", "motion", "support_surfaces", "retarget_report", "qa"],
+      "required": [
+        "model",
+        "frame",
+        "motion",
+        "support_surfaces",
+        "retarget_report",
+        "qa"
+      ],
       "properties": {
         "model": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "description_file", "sha256"],
+          "required": [
+            "id",
+            "description_file",
+            "sha256"
+          ],
           "properties": {
-            "id": {"$ref": "#/$defs/name"},
-            "description_file": {"type": "string"},
-            "sha256": {"$ref": "#/$defs/sha256"}
+            "id": {
+              "$ref": "#/$defs/name"
+            },
+            "description_file": {
+              "type": "string"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
           }
         },
-        "frame": {"$ref": "#/$defs/derived_frame"},
+        "frame": {
+          "$ref": "#/$defs/derived_frame"
+        },
         "motion": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["path", "format", "fps", "n_frames", "joint_count"],
+          "required": [
+            "path",
+            "format",
+            "fps",
+            "n_frames",
+            "joint_count"
+          ],
           "properties": {
-            "path": {"$ref": "#/$defs/path"},
-            "format": {"const": "motion_v1/single_robot"},
-            "fps": {"type": "number", "exclusiveMinimum": 0},
-            "n_frames": {"type": "integer", "minimum": 2},
-            "joint_count": {"type": "integer", "minimum": 1}
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "format": {
+              "const": "motion_v1/single_robot"
+            },
+            "fps": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "n_frames": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "joint_count": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
-        "support_surfaces": {"$ref": "#/$defs/path"},
-        "retarget_report": {"$ref": "#/$defs/path"},
+        "support_surfaces": {
+          "$ref": "#/$defs/path"
+        },
+        "retarget_report": {
+          "$ref": "#/$defs/path"
+        },
         "qa": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "physics_replay", "flag_reasons", "completion"],
+          "required": [
+            "status",
+            "physics_replay",
+            "flag_reasons",
+            "completion"
+          ],
           "properties": {
-            "status": {"enum": ["pass", "flagged", "not_run"]},
-            "physics_replay": {"oneOf": [{"$ref": "#/$defs/path"}, {"type": "null"}]},
-            "flag_reasons": {"type": "array", "items": {"type": "string"}},
-            "completion": {"type": ["number", "null"]}
+            "status": {
+              "enum": [
+                "pass",
+                "flagged",
+                "not_run"
+              ]
+            },
+            "physics_replay": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/path"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "flag_reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "completion": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "report",
+        "reasons"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pass",
+            "reject",
+            "not_run"
+          ]
+        },
+        "report": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/path"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         }
       }

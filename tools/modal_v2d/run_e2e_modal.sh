@@ -65,7 +65,7 @@ for arg in "$@"; do
   esac
 done
 case "$subcommand" in
-  init|use|status|inspect|import-reconstruction) default_h=0.5 ;;
+  init|use|status|triage|inspect|import-reconstruction) default_h=0.5 ;;
   setup) default_h=3 ;;
   reconstruct) default_h=4 ;;
   doctor|simulate) default_h=1 ;;

@@ -93,10 +93,32 @@ def clip_steps(clip: dict, manifest: dict) -> list[list[str]]:
     ]]
     if manifest.get("setup", True):
         steps.append(["--config", config, "setup", *SETUP_ARGS])
+    if manifest.get("triage", True):  # CPU gate on the video; exit 3 (rejected) ends the clip here
+        steps.append(["--config", config, "triage", "--video", clip["video"]])
     if manifest.get("reconstruct", True):  # false: plumbing smoke (CPU only)
         reconstruct_args = clip.get("reconstruct_args") or manifest.get("reconstruct_args") or DEFAULT_RECONSTRUCT_ARGS
         steps.append(["--config", config, "reconstruct", "--video", clip["video"], *reconstruct_args])
+        if manifest.get("recon_qa", True):  # CPU gate on the bundle; exit 3 skips the robot steps
+            steps.append(["--config", config, "inspect"])
     return steps
+
+
+GATE_REJECTED = 3  # run_e2e.sh exit code when a gate (triage, reconstruction QA) rejected the clip
+GATE_REPORTS = ("qa/triage.json", "qa/reconstruction.json")
+
+
+def gate_reasons(name: str, read_text) -> list[str]:
+    """Why a clip's gates rejected it: reasons from its gate reports (``read_text(path)`` reads
+    a run-root path as seen in the control container; unreadable reports are skipped)."""
+    reasons = []
+    for report in GATE_REPORTS:
+        try:
+            data = json.loads(read_text(f"{RUNS}/{name}/{report}"))
+        except (OSError, ValueError):
+            continue
+        if data.get("verdict") in ("reject",):
+            reasons += [f"{data.get('schema', report)}: {r}" for r in data.get("reasons", [])]
+    return reasons
 
 
 RENDER_EVERY = 20  # 1 clip in N gets the optional `render` visual check, plus every flagged clip
@@ -152,13 +174,18 @@ def summarize(results: list[dict]) -> str:
     lines = [f"{'clip':24s} {'result':10s} {'start+':>8s} {'wall':>8s}"]
     for r in sorted(results, key=lambda r: r["start"]):
         lines.append(
-            f"{r['name']:24s} {('ok' if r['code'] == 0 else 'FAIL ' + str(r['code']))[:10]:10s} "
+            f"{r['name']:24s} {_result_label(r['code'])[:10]:10s} "
             f"{_mmss(r['start'] - t0):>8s} {_mmss(r['end'] - r['start']):>8s}"
         )
     ok = sum(r["code"] == 0 for r in results)
+    rejected = sum(r["code"] == GATE_REJECTED for r in results)
     rate = f"{ok / (t1 - t0) * 3600:.1f} clips/h" if t1 - t0 >= 1 else "clips/h n/a (nothing to run)"
-    lines.append(f"makespan {_mmss(t1 - t0)} | {ok}/{len(results)} ok | {rate}")
+    lines.append(f"makespan {_mmss(t1 - t0)} | {ok}/{len(results)} ok, {rejected} rejected by gates | {rate}")
     return "\n".join(lines)
+
+
+def _result_label(code) -> str:
+    return "ok" if code == 0 else "REJECTED" if code == GATE_REJECTED else f"FAIL {code}"
 
 
 def _mmss(seconds: float) -> str:

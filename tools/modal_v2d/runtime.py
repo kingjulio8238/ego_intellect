@@ -1204,7 +1204,8 @@ def run_batch_role(
                 if code != 0:
                     break
             result = {"name": clip["name"], "code": code, "start": start, "end": time.time()}
-            log(f"batch {batch_id}: {clip['name']} {'ok' if code == 0 else f'FAILED (exit {code})'} "
+            status = "ok" if code == 0 else "REJECTED by a gate" if code == 3 else f"FAILED (exit {code})"
+            log(f"batch {batch_id}: {clip['name']} {status} "
                 f"in {result['end'] - start:.0f}s")
             if progress_store is not None:
                 progress_store.put(f"batch:{batch_id}:{clip['name']}", result)

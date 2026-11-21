@@ -13,9 +13,9 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 |---|---|---|---|---|
 | 1 | Vendor intake spec (format, intrinsics/IMU, metadata) | `python3 -m tools.envpkg intake` | **Built** (A): `intake/v1` contract + checker ([INTAKE.md](INTAKE.md)) | seconds |
 | 2 | Ingest | `init` (+ per-clip `setup --skip-reconstruction`) | Optimized in batch mode | 7–26 s |
-| 3 | Triage gate (reject bad clips before GPU spend) | — | **To add** | — |
+| 3 | Triage gate (reject bad clips before GPU spend) | `triage` (batch default) | **Built** (B): format, sharpness, exposure, frozen frames, cuts, close-up hands; exit 3 = rejected ([GATES.md](GATES.md)) | ~4 s (CPU) |
 | 4 | Reconstruct (hands, object, camera bundle) | `reconstruct --fast` | **Optimized** (round 2: −26%, gate PASS; −80% vs stock e2e) | ~7.2 min (was 9.75) |
-| 5 | Reconstruction QA (pass/fail thresholds) | `inspect` | Exists; needs thresholds | 0.1 min |
+| 5 | Reconstruction QA (pass/fail thresholds) | `inspect` (batch default) | **Built** (B): 15 limits incl. mesh-vs-mask IoU, SLAM jumps, jitter, scale; caught both airplane reconstructions ([GATES.md](GATES.md)) | 3–5 s (CPU) |
 | 6 | Retarget (robot-agnostic human-hand motion + robot retargets) | `retarget` | **Optimized** (Vega; −60%): IK 100 → 30 iterations, verification video moved to `render` | ~1.3 min (was 3.0–3.5) |
 | 7 | Environment build + physics QA replay (assets, collision, support surfaces; numeric flags) | `simulate` | **Optimized** (−50%): CPU physics for the replay, Isaac caches baked into the image | ~0.5–0.6 min (was ~1.1) |
 | 8 | Render overlay (visual check) | `render` (overlay of the physics replay; flagged + 1 in 20, after delivery) | **Optimized** | 0 on the path (was 5.3 min); 20 s per rendered clip |
@@ -52,7 +52,7 @@ Decided: build before more speed work; package for Isaac Lab and MuJoCo. In depe
 | Step | Builds | Status |
 |---|---|---|
 | A | Package contract + vendor intake spec (stages 1, 11) | **Done**: `tools/envpkg`, [ENV_PACKAGE.md](ENV_PACKAGE.md), [INTAKE.md](INTAKE.md) |
-| B | Triage gate + reconstruction QA thresholds (stages 3, 5) | Todo |
+| B | Triage gate + reconstruction QA thresholds (stages 3, 5) | **Done**: `tools/gates`, [GATES.md](GATES.md); calibrated 52/52 (recon) and 32/32 (triage) |
 | C | Task/reward spec per clip (stage 10), written into `manifest.task` | Todo |
 | D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | Todo |
 | E | MuJoCo exporter (`mujoco/`, starting from `robotic_grounding/flash_chord`), second physics check | Todo |

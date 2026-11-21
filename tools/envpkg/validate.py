@@ -273,9 +273,23 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
         elif qa["status"] != "not_run":
             err(f"robots.{name}.qa: status {qa['status']!r} without a physics replay report")
 
-    verdict = "flagged" if "flagged" in statuses else "incomplete" if "not_run" in statuses else "pass"
+    gates = manifest["qa"]["gates"]
+    for gate, entry in gates.items():
+        if entry["report"] is None:
+            if entry["status"] != "not_run":
+                err(f"qa.gates.{gate}: status {entry['status']!r} without a report")
+            continue
+        if entry["report"] not in listed:
+            err(f"qa.gates.{gate}: report {entry['report']} is not a package file")
+            continue
+        data = json.loads((root / entry["report"]).read_text())
+        if ("pass" if data.get("verdict") in ("accept", "pass") else "reject") != entry["status"]:
+            err(f"qa.gates.{gate}: status {entry['status']!r} disagrees with the report verdict {data.get('verdict')!r}")
+    from .build import package_verdict
+
+    verdict = package_verdict(statuses, [g["status"] for g in gates.values()])
     if manifest["qa"]["verdict"] != verdict:
-        err(f"qa.verdict {manifest['qa']['verdict']!r}, robot QA statuses imply {verdict!r}")
+        err(f"qa.verdict {manifest['qa']['verdict']!r}, QA statuses imply {verdict!r}")
 
     provenance = manifest["provenance"]
     if manifest["task"] is None:

@@ -35,6 +35,8 @@ from .stages import (
     evaluate_stages,
     finetune_stages,
     import_reconstruction_stages,
+    RECONSTRUCTION_QA_REPORT,
+    TRIAGE_REPORT,
     inspect_stages,
     pilot_collection_stage,
     read_pilot_measurement,
@@ -44,6 +46,7 @@ from .stages import (
     setup_stages,
     simulate_stages,
     solvability_stages,
+    triage_stages,
     train_expert_stages,
 )
 
@@ -199,9 +202,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_reconstruction.add_argument("--bundle", type=Path)
 
-    subparsers.add_parser(
-        "inspect", help="verify the reconstruction bundle for manual review"
+    triage = subparsers.add_parser(
+        "triage", help="triage gate: CPU checks on the source video before GPU work (exit 3: rejected)"
     )
+    triage.add_argument("--video", type=Path)
+
+    inspect = subparsers.add_parser(
+        "inspect",
+        help="verify the reconstruction bundle and apply the reconstruction QA gate (exit 3: rejected)",
+    )
+    inspect.add_argument("--fps", type=float, help="source frame rate (only when the run has no input video)")
 
     retarget = subparsers.add_parser(
         "retarget", help="retarget the reconstructed motion"
@@ -570,6 +580,22 @@ def _run_collect(args: argparse.Namespace, config: E2EConfig) -> None:
     )
 
 
+def _gate_exit(args: argparse.Namespace, report: Path, gate: str) -> int:
+    """Exit code of a gate command: 0 accepted, GATE_REJECTED when the gate rejected the clip."""
+    if getattr(args, "dry_run", False):
+        return 0
+    from tools.gates.common import REJECTED_EXIT, verdict_of
+
+    accepted, reasons = verdict_of(report)
+    if accepted:
+        print(f"{gate}: accepted ({report})")
+        return 0
+    print(f"{gate}: REJECTED ({report})")
+    for reason in reasons:
+        print(f"  - {reason}")
+    return REJECTED_EXIT
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the E2E workflow command-line interface."""
     parser = build_parser()
@@ -729,8 +755,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 inputs={"reconstruction_bundle": bundle},
             )
             _runner(args, config).run_many(import_reconstruction_stages(config))
+        elif args.command == "triage":
+            video = _input_value(args, config, "triage", "video")
+            config = _configure(args, config, "triage", {"video": video}, inputs={"video": video})
+            _runner(args, config).run_many(triage_stages(config))
+            return _gate_exit(args, config.run_root / TRIAGE_REPORT, "triage")
         elif args.command == "inspect":
-            _runner(args, config).run_many(inspect_stages(config))
+            fps = _stage_value(args, config, "inspect", "fps")
+            _runner(args, config).run_many(inspect_stages(config, fps=fps))
+            return _gate_exit(args, config.run_root / RECONSTRUCTION_QA_REPORT, "reconstruction QA")
         elif args.command == "retarget":
             sequence = str(config.workflow["sequence_id"])
             embodiment = _stage_value(

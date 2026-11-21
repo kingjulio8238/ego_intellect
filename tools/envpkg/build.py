@@ -38,6 +38,18 @@ LOADED = Path("intermediate/ego_recon/loaded")
 PROCESSED = Path("human_motion_data/ego_recon/processed")
 STAGE = Path("human_motion_data/ego_recon/reconstructed_stage")
 PROVENANCE_STAGES = ("reconstruct", "retarget", "simulate")
+GATES = ("triage", "reconstruction")  # RUN_ROOT/qa/<gate>.json, written by tools/gates
+
+
+def package_verdict(robot_statuses: list[str], gate_statuses: list[str]) -> str:
+    """rejected (a gate rejected) > flagged (physics QA) > incomplete (a check not run) > pass."""
+    if "reject" in gate_statuses:
+        return "rejected"
+    if "flagged" in robot_statuses:
+        return "flagged"
+    if "not_run" in robot_statuses or "not_run" in gate_statuses:
+        return "incomplete"
+    return "pass"
 
 # PhysX default material. The Vega task sets only the hand friction (2.0), so the object uses
 # this in the physics QA replay (vega_sharpa_manip_env_cfg.py, hand_physics_material).
@@ -384,9 +396,21 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
             "qa": qa,
         }
 
-    verdict = "flagged" if "flagged" in statuses else "incomplete" if "not_run" in statuses else "pass"
-    if verdict == "flagged" and not allow_flagged:
-        raise ContractError(f"physics QA flagged the clip ({'; '.join(reasons)}); pass --allow-flagged to package it anyway")
+    gates: dict[str, Any] = {}
+    for gate in GATES:
+        source = run_root / "qa" / f"{gate}.json"
+        if not source.is_file():
+            gates[gate] = {"status": "not_run", "report": None, "reasons": []}
+            reasons.append(f"{gate} gate not run")
+            continue
+        data = _load_json(source)
+        status = "pass" if data.get("verdict") in ("accept", "pass") else "reject"
+        write_json(staging / "qa" / f"{gate}.json", _scrub_paths(data))
+        gates[gate] = {"status": status, "report": f"qa/{gate}.json", "reasons": [str(r) for r in data.get("reasons", [])]}
+        reasons += [f"{gate}: {r}" for r in gates[gate]["reasons"]]
+    verdict = package_verdict(statuses, [g["status"] for g in gates.values()])
+    if verdict in ("rejected", "flagged") and not allow_flagged:
+        raise ContractError(f"QA {verdict} the clip ({'; '.join(reasons)}); pass --allow-flagged to package it anyway")
 
     video = context["video"]
     manifest: dict[str, Any] = {
@@ -448,7 +472,7 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
         "robots": robot_entries,
         "task": None,
         "simulators": {},
-        "qa": {"verdict": verdict, "reasons": reasons},
+        "qa": {"verdict": verdict, "reasons": reasons, "gates": gates},
         "files": [],
     }
     files = sorted(p for p in staging.rglob("*") if p.is_file())

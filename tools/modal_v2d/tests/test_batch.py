@@ -181,12 +181,15 @@ MANIFEST = {
 def test_clip_steps_use_explicit_config_never_the_active_pointer():
     manifest = B.load_manifest(json.dumps(MANIFEST))
     steps = B.clip_steps(manifest["clips"][0], manifest)
-    assert [s[0] if s[0] != "--config" else s[2] for s in steps] == ["init", "setup", "reconstruct"]
+    assert [s[0] if s[0] != "--config" else s[2] for s in steps] == ["init", "setup", "triage", "reconstruct", "inspect"]
     assert steps[0][:3] == ["init", "--run-root", "/e2e/runs/tb1"]
     for step in steps[1:]:
         assert step[:2] == ["--config", "/e2e/runs/tb1/e2e_config.json"]
-    assert steps[2][-len(B.DEFAULT_RECONSTRUCT_ARGS):] == B.DEFAULT_RECONSTRUCT_ARGS
-    assert B.clip_steps(manifest["clips"][1], manifest)[2][-3:] == ["--hand-tracking", "hamer", "--fast"]
+    assert steps[2][2:] == ["triage", "--video", "/v/tb.mp4"]
+    assert steps[3][-len(B.DEFAULT_RECONSTRUCT_ARGS):] == B.DEFAULT_RECONSTRUCT_ARGS
+    assert B.clip_steps(manifest["clips"][1], manifest)[3][-3:] == ["--hand-tracking", "hamer", "--fast"]
+    gates_off = {**manifest, "triage": False, "recon_qa": False}
+    assert [s[2] for s in B.clip_steps(manifest["clips"][0], gates_off)[1:]] == ["setup", "reconstruct"]
     from tools.modal_v2d import runtime
 
     for step in steps:  # every step locks and syncs exactly this clip's run root

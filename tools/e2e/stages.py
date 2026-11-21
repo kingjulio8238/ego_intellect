@@ -321,9 +321,48 @@ def import_reconstruction_stages(config: E2EConfig) -> list[Stage]:
     ]
 
 
-def inspect_stages(config: E2EConfig) -> list[Stage]:
-    """Build the stage that inspects an active reconstruction bundle."""
+TRIAGE_REPORT = Path("qa/triage.json")
+RECONSTRUCTION_QA_REPORT = Path("qa/reconstruction.json")
+
+
+def triage_stages(config: E2EConfig) -> list[Stage]:
+    """Triage gate (stage 3): CPU checks on the source video before any GPU work.
+
+    The stage succeeds whenever the gate ran; its verdict is data in RUN_ROOT/qa/triage.json
+    (`run_e2e.sh triage` then exits 3 for a rejected clip). Limits: tools/gates/limits.json.
+    """
+    video = config.input_path("video")
+    report = config.run_root / TRIAGE_REPORT
+    return [
+        Stage(
+            "triage",
+            (
+                _command(
+                    (sys.executable, "-m", "tools.gates.triage", "--video", video, "--out", report, "--exit-zero"),
+                    cwd=REPO_ROOT,
+                    label="triage the source video (format, sharpness, exposure, cuts, hands)",
+                ),
+            ),
+            inputs=(video,),
+            outputs=(report,),
+            description="reject unusable clips before GPU spend",
+        )
+    ]
+
+
+def inspect_stages(config: E2EConfig, fps: float | None = None) -> list[Stage]:
+    """Validate the reconstruction bundle, then run the reconstruction QA gate (stage 5).
+
+    The QA verdict is data in RUN_ROOT/qa/reconstruction.json (`run_e2e.sh inspect` then
+    exits 3 for a rejected clip, so batches skip its robot steps).
+    """
     bundle = config.host_path("bundle")
+    report = config.run_root / RECONSTRUCTION_QA_REPORT
+    qa_argv: list[str | Path] = [
+        sys.executable, "-m", "tools.gates.recon_qa", "--run-root", config.run_root, "--out", report, "--exit-zero",
+    ]
+    if fps:
+        qa_argv += ["--fps", str(fps)]
     return [
         Stage(
             "inspect.reconstruction",
@@ -339,6 +378,7 @@ def inspect_stages(config: E2EConfig) -> list[Stage]:
                     cwd=REPO_ROOT,
                     label="validate and report the reconstruction bundle",
                 ),
+                _command(tuple(qa_argv), cwd=REPO_ROOT, label="reconstruction QA gate"),
             ),
             inputs=(bundle,),
             outputs=(
@@ -346,8 +386,9 @@ def inspect_stages(config: E2EConfig) -> list[Stage]:
                 bundle / "mesh.obj",
                 bundle / "manifest.json",
                 bundle / "threejs_scene/index.html",
+                report,
             ),
-            description="verify the reconstruction bundle before manual Three.js review",
+            description="verify the reconstruction bundle and apply the reconstruction QA limits",
         )
     ]
 

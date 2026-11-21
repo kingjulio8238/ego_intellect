@@ -1,0 +1,93 @@
+{
+  "recon_qa/v1": {
+    "_calibration": "docs/pipeline/GATES.md",
+    "camera_valid_fraction": {
+      "min": 0.95,
+      "why": "camera poses missing"
+    },
+    "object_valid_fraction": {
+      "min": 0.9,
+      "why": "object pose lost on too many frames"
+    },
+    "hand_valid_fraction": {
+      "min": 0.5,
+      "why": "no hand tracked for most of the clip"
+    },
+    "camera_speed_max_mps": {
+      "max": 2.0,
+      "why": "camera jumps faster than a head moves (SLAM failure)"
+    },
+    "camera_turn_max_radps": {
+      "max": 6.0,
+      "why": "camera turns faster than a head turns (SLAM failure)"
+    },
+    "object_accel_p95_mps2": {
+      "max": 2.5,
+      "why": "object trajectory jitters"
+    },
+    "wrist_accel_p95_mps2": {
+      "max": 3.0,
+      "why": "wrist trajectory jitters"
+    },
+    "object_extent_max_m": {
+      "min": 0.03,
+      "max": 1.0,
+      "why": "object size implausible for a hand-held object (scale or unit error)"
+    },
+    "hand_object_gap_p20_m": {
+      "max": 0.06,
+      "why": "wrists are within 6 cm of the object on fewer than 20% of frames (hand or object depth/scale wrong)"
+    },
+    "wrist_inside_object_fraction": {
+      "max": 0.15,
+      "why": "wrists sit inside the object (object pose or scale wrong)"
+    },
+    "object_mask_fraction": {
+      "min": 0.8,
+      "why": "the object is not segmented on most frames"
+    },
+    "object_iou_median": {
+      "min": 0.8,
+      "why": "posed object mesh does not cover the object's mask"
+    },
+    "object_iou_p10": {
+      "min": 0.77,
+      "why": "posed object mesh misses the object's mask on a tenth of frames"
+    },
+    "wrist_on_hand_mask_fraction": {
+      "min": 0.8,
+      "why": "wrists do not project onto their hand's mask"
+    }
+  },
+  "triage/v1": {
+    "_calibration": "docs/pipeline/GATES.md",
+    "format_errors": {
+      "max": 0,
+      "why": "outside the intake video envelope"
+    },
+    "hand_frame_fraction": {
+      "min": 0.25,
+      "why": "hands visible on too few frames"
+    },
+    "hand_size_median": {
+      "min": 0.08,
+      "why": "hands too small in frame (not a close-up egocentric view)"
+    },
+    "sharp_frame_fraction": {
+      "min": 0.6,
+      "why": "too many blurred frames"
+    },
+    "exposure_ok_fraction": {
+      "min": 0.7,
+      "why": "too many under- or over-exposed frames"
+    },
+    "frozen_fraction": {
+      "max": 0.3,
+      "why": "too many repeated frames (static camera, stalled capture, or a screen recording)"
+    },
+    "cut_count": {
+      "max": 0,
+      "why": "scene cuts: more than one shot in the clip"
+    }
+  }
+}

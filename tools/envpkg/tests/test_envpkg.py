@@ -62,7 +62,8 @@ def _write_row(path: Path, row: dict) -> None:
     pq.write_table(pa.Table.from_pylist([row]), path)
 
 
-def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, track_rotation_deg: float = 0.0) -> Path:
+def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, track_rotation_deg: float = 0.0,
+                  gates: dict | None = None) -> Path:
     t = np.arange(N) / FPS
     world = np.tile(np.eye(4), (N, 1, 1))
     world[:, :3, :3] = Rotation.from_euler("z", (20 * t)[:, None], degrees=True).as_matrix()
@@ -131,6 +132,11 @@ def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, t
         "schema": "v2d_replay_metrics_v1", "flag": flag, "flag_reasons": ["wrist_pos_p95_m"] if flag else [],
         "completion": 0.33,
     }))
+    (root / "qa").mkdir()
+    for gate, verdict in (gates or {"triage": "accept", "reconstruction": "pass"}).items():
+        if verdict is not None:
+            (root / f"qa/{gate}.json").write_text(json.dumps({
+                "schema": f"{gate}/v1", "verdict": verdict, "reasons": ["too blurred"] if verdict == "reject" else []}))
     if provenance:
         (root / "e2e_config.json").write_text(json.dumps({"workflow": {
             "sequence_id": SEQ, "instruction": "lift the box", "object_prompt": "a box", "task_profile": "box_lift"}}))
@@ -184,7 +190,8 @@ class PackageTest(unittest.TestCase):
         report = validate_package(package)
         self.assertTrue(report.ok, report.errors)
         manifest = json.loads((package / "manifest.json").read_text())
-        self.assertEqual(manifest["qa"], {"verdict": "pass", "reasons": []})
+        self.assertEqual((manifest["qa"]["verdict"], manifest["qa"]["reasons"]), ("pass", []))
+        self.assertEqual(manifest["qa"]["gates"]["triage"], {"status": "pass", "report": "qa/triage.json", "reasons": []})
         self.assertAlmostEqual(manifest["frames"]["tracks"]["T_from_world"][0][3], 0.05, places=6)
         self.assertEqual(manifest["core"]["object"]["physics"]["mass_source"], "default_constant")
         motion = pq.read_table(package / "robots/vega_sharpa/motion.parquet").to_pylist()[0]
@@ -204,12 +211,29 @@ class PackageTest(unittest.TestCase):
         run = make_run_root(self.tmp / "run", flag=True)
         with self.assertRaisesRegex(ContractError, "provenance incomplete"):
             build_package(run, self.tmp / "pkg")
-        with self.assertRaisesRegex(ContractError, "physics QA flagged"):
+        with self.assertRaisesRegex(ContractError, "QA flagged"):
             build_package(run, self.tmp / "pkg", allow_missing_provenance=True)
         self.assertFalse((self.tmp / "pkg").exists())
         package = build_package(run, self.tmp / "pkg", allow_missing_provenance=True, allow_flagged=True)
         self.assertTrue(validate_package(package).ok)
         self.assertRejected(package, "delivery requires 'pass'", strict=True)
+
+    def test_gate_verdicts(self) -> None:
+        run = make_run_root(self.tmp / "run", gates={"triage": "accept", "reconstruction": "reject"})
+        with self.assertRaisesRegex(ContractError, "QA rejected"):
+            build_package(run, self.tmp / "pkg", allow_missing_provenance=True)
+        package = build_package(run, self.tmp / "pkg", allow_missing_provenance=True, allow_flagged=True)
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(manifest["qa"]["verdict"], "rejected")
+        self.assertIn("reconstruction: too blurred", manifest["qa"]["reasons"])
+        self.assertTrue(validate_package(package).ok)
+        rehash(package, lambda m: m["qa"]["gates"]["reconstruction"].update(status="pass"))
+        self.assertRejected(package, "disagrees with the report verdict")
+        run2 = make_run_root(self.tmp / "run2", gates={"triage": None, "reconstruction": "pass"})
+        package2 = build_package(run2, self.tmp / "pkg2", allow_missing_provenance=True)
+        manifest2 = json.loads((package2 / "manifest.json").read_text())
+        self.assertEqual((manifest2["qa"]["verdict"], manifest2["qa"]["gates"]["triage"]["status"]), ("incomplete", "not_run"))
+        self.assertRejected(package2, "delivery requires 'pass'", strict=True)
 
     def test_build_refuses_tracks_in_a_rotated_frame(self) -> None:
         run = make_run_root(self.tmp / "run", track_rotation_deg=5.0)

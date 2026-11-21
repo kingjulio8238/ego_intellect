@@ -535,7 +535,8 @@ class Tracker:
     def finish(self, returncode: int) -> None:
         with self.lock:
             self._stop.set()
-            self.status = "succeeded" if returncode == 0 else "failed"
+            # Exit 3 = a gate (triage, reconstruction QA) ran and rejected the clip: a result, not a failure.
+            self.status = "succeeded" if returncode == 0 else "rejected" if returncode == 3 else "failed"
             finished, total = self.counts()
             self._banner(
                 f"{'✔' if returncode == 0 else '✘'} {self.command} {self.status} (exit {returncode}) | "

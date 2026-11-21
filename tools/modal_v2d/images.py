@@ -446,11 +446,36 @@ RG_ISAAC_WARMUP = (
 )
 
 
+# Triage gate (tools/gates/triage.py): MediaPipe hand landmarker on CPU, model baked in.
+GATE_PYTHON_DEPS = ["mediapipe==1.2.3"]
+HAND_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
+HAND_LANDMARKER_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+
+
 def control_image() -> modal.Image:
     return (
         modal.Image.debian_slim(python_version="3.11")
         .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0", "wget", "bash")
         .pip_install(*HOST_PYTHON_DEPS)
+        # MediaPipe's task runtime dlopens EGL/GLES even on CPU (missing: "libEGL.so.1: cannot open").
+        .apt_install("libegl1", "libgles2")
+        .pip_install(*GATE_PYTHON_DEPS)
+        .run_commands(
+            "mkdir -p /opt/mediapipe_tasks",
+            f"wget -q -O /opt/mediapipe_tasks/hand_landmarker.task {HAND_LANDMARKER_URL}",
+            f"echo '{HAND_LANDMARKER_SHA256}  /opt/mediapipe_tasks/hand_landmarker.task' | sha256sum -c -",
+            # A broken install must fail the build, not the first clip's triage: build the
+            # detector and run it once, the way tools/gates/triage.py does.
+            "python -c \"import numpy as np, mediapipe as mp; "
+            "from mediapipe.tasks.python import BaseOptions; "
+            "from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode; "
+            "d = HandLandmarker.create_from_options(HandLandmarkerOptions(base_options=BaseOptions("
+            "model_asset_path='/opt/mediapipe_tasks/hand_landmarker.task'), running_mode=RunningMode.IMAGE)); "
+            "r = d.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((240, 320, 3), np.uint8))); "
+            "d.close(); print('gates deps OK', mp.__version__, len(r.hand_landmarks), 'hands on a blank frame')\"",
+        )
         # Placeholder so `setup --isaac-groot-dir` validates here; the real checkout lives
         # at the same path in the robotic-grounding image, where it is used.
         .run_commands(

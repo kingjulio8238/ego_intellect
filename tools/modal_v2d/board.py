@@ -53,10 +53,10 @@ def row(snapshot: dict, now: float) -> list[str]:
     inner = snapshot.get("inner")
     if inner:
         progress += f" · {inner[0]}/{inner[1]}"
-    end = snapshot.get("updated", now) if status in ("succeeded", "failed") else now
+    end = snapshot.get("updated", now) if status in ("succeeded", "failed", "rejected") else now
     progress += f" · {hms(end - snapshot.get('started', now))}"
     last = (call or {}).get("remote_last") or snapshot.get("last_line") or ""
-    result = status if status in ("succeeded", "failed") or status.startswith("STALE") else (last[-60:] or "…")
+    result = status if status in ("succeeded", "failed", "rejected") or status.startswith("STALE") else (last[-60:] or "…")
     eta = snapshot.get("eta")
     eta_text = utc(eta, seconds=False) if eta and status == "running" else ("—" if status != "running" else f"cap {utc(snapshot.get('deadline'), seconds=False)}")
     return [
