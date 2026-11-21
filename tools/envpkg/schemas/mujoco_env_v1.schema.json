@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mujoco_env/v1",
+  "title": "MuJoCo export (mujoco_env/v1)",
+  "description": "mujoco/env.json in an environment package. Contract: docs/pipeline/MUJOCO_EXPORT.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "mujoco_version", "robots"],
+  "properties": {
+    "schema": {"const": "mujoco_env/v1"},
+    "mujoco_version": {"type": "string"},
+    "robots": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["scene", "isaaclab_task", "joints", "control", "ee_bodies", "hand_contact_bodies", "object",
+                     "friction", "not_modelled", "robot_assets"],
+        "properties": {
+          "scene": {"type": "string", "pattern": "^mujoco/[^/]+/scene\\.xml$"},
+          "joints": {
+            "type": "array", "minItems": 1,
+            "items": {"type": "object", "required": ["joint", "kp", "kd", "delay_physics_steps"],
+                      "properties": {"delay_physics_steps": {"type": "integer", "minimum": 0}}}
+          },
+          "control": {"type": "object", "required": ["physics_dt_s", "decimation", "control_dt_s", "playback_speed"]},
+          "ee_bodies": {"type": "array", "items": {"type": "string"}},
+          "hand_contact_bodies": {
+            "type": "object", "required": ["left", "right"],
+            "properties": {"left": {"type": "array", "minItems": 1}, "right": {"type": "array", "minItems": 1}}
+          }
+        }
+      }
+    }
+  }
+}

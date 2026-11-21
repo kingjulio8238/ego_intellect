@@ -261,7 +261,11 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
             err(f"{robot['support_surfaces']}: frame {support.get('frame')!r}, expected 'robot:{name}'")
 
         qa = robot["qa"]
-        statuses.append(qa["status"])
+        from .build import effective_status
+
+        statuses.append(effective_status(qa))
+        if qa.get("mujoco"):
+            _check_mujoco_qa(root, name, qa, listed, report)
         if qa["physics_replay"]:
             metrics = json.loads((root / qa["physics_replay"]).read_text())
             if metrics.get("schema") != "v2d_replay_metrics_v1":
@@ -295,6 +299,8 @@ def validate_package(root: Path, *, strict: bool = False) -> Report:
         _check_task(root, manifest, listed, report)
     if "isaaclab" in manifest["simulators"]:
         _check_isaaclab(root, manifest, listed, report)
+    if "mujoco" in manifest["simulators"]:
+        _check_mujoco(root, manifest, listed, report)
 
     provenance = manifest["provenance"]
     if manifest["task"] is None:
@@ -451,3 +457,57 @@ def _differs(a: Any, b: Any) -> bool:
     if isinstance(a, list) and isinstance(b, list):
         return len(a) != len(b) or any(_differs(x, y) for x, y in zip(a, b))
     return a != b
+
+
+def _check_mujoco_qa(root: Path, robot: str, qa: dict[str, Any], listed: dict[str, Any], report: Report) -> None:
+    """The robot's MuJoCo replay entry agrees with its report and with the Isaac replay."""
+    from .mujoco_replay import agreement
+
+    entry = qa["mujoco"]
+    if entry["report"] not in listed or not qa["physics_replay"]:
+        report.errors.append(f"robots.{robot}.qa.mujoco: report {entry['report']} missing (or no Isaac replay)")
+        return
+    mj = json.loads((root / entry["report"]).read_text())
+    isaac = json.loads((root / qa["physics_replay"]).read_text())
+    if ("flagged" if mj.get("flag") else "pass") != entry["status"] or mj.get("completion") != entry["completion"]:
+        report.errors.append(f"robots.{robot}.qa.mujoco disagrees with {entry['report']}")
+    if agreement(mj, isaac)["agree"] != entry["agree"]:
+        report.errors.append(f"robots.{robot}.qa.mujoco.agree does not follow from the two replay reports")
+
+
+def _check_mujoco(root: Path, manifest: dict[str, Any], listed: dict[str, Any], report: Report) -> None:
+    """mujoco_env/v1: schema, scene and assets present; when MuJoCo is installed, the scene loads
+    and drives exactly the motion's joints."""
+    from .common import MUJOCO_SCHEMA
+
+    err = report.errors.append
+    entry = manifest["simulators"]["mujoco"]
+    if entry["schema"] != MUJOCO_SCHEMA or entry["env"] not in listed:
+        err(f"simulators.mujoco: {entry} is not a {MUJOCO_SCHEMA} package file")
+        return
+    env = json.loads((root / entry["env"]).read_text())
+    errors = schema_errors(MUJOCO_SCHEMA, env)
+    if errors:
+        report.errors += errors
+        return
+    try:
+        import mujoco
+    except ImportError:
+        report.warnings.append("mujoco not installed: MuJoCo scenes not loaded")
+        mujoco = None
+    for robot, part in env["robots"].items():
+        if robot not in manifest["robots"] or part["scene"] not in listed:
+            err(f"mujoco.robots.{robot}: robot or scene {part['scene']} not in the package")
+            continue
+        motion = manifest["robots"][robot]["motion"]
+        if [j["joint"] for j in part["joints"]] != _row(root / motion["path"])["robot_joint_names"]:
+            err(f"mujoco.robots.{robot}: joint table does not follow the motion's joint order")
+        if mujoco is None:
+            continue
+        try:
+            model = mujoco.MjModel.from_xml_path(str(root / part["scene"]))
+        except Exception as exc:  # noqa: BLE001
+            err(f"mujoco.robots.{robot}: {part['scene']} does not load ({exc})")
+            continue
+        if model.nu != motion["joint_count"] or model.body("object").id < 0:
+            err(f"mujoco.robots.{robot}: scene has {model.nu} actuators for {motion['joint_count']} joints")

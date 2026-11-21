@@ -42,6 +42,35 @@ PROVENANCE_STAGES = ("reconstruct", "retarget", "simulate")
 GATES = ("triage", "reconstruction")  # RUN_ROOT/qa/<gate>.json, written by tools/gates
 
 
+def effective_status(qa: dict[str, Any]) -> str:
+    """A robot's physics-QA status across simulators: flagged if Isaac or MuJoCo flags the clip,
+    or if the two disagree beyond the measured limits (tools/envpkg/mujoco_replay.py)."""
+    mujoco = qa.get("mujoco")
+    if qa["status"] == "pass" and mujoco and (mujoco["status"] == "flagged" or not mujoco["agree"]):
+        return "flagged"
+    return qa["status"]
+
+
+def _mujoco(staging: Path, manifest: dict[str, Any], reasons: list[str]) -> None:
+    """MuJoCo export, then the second physics check on it for each robot with an Isaac replay."""
+    from .mujoco_export import export_mujoco
+    from .mujoco_replay import agreement, replay
+
+    manifest["simulators"]["mujoco"] = export_mujoco(staging, manifest)
+    for robot, entry in manifest["robots"].items():
+        qa = entry["qa"]
+        if not qa["physics_replay"]:
+            continue
+        report = replay(staging, robot, manifest)
+        path = f"qa/{robot}/mujoco_replay.json"
+        write_json(staging / path, report)
+        agree = agreement(report, _load_json(staging / qa["physics_replay"]))
+        qa["mujoco"] = {"status": "flagged" if report["flag"] else "pass", "report": path,
+                        "flag_reasons": report["flag_reasons"], "completion": report["completion"], **agree}
+        reasons += [f"{robot} (MuJoCo): {r}" for r in report["flag_reasons"]]
+        reasons += [f"{robot}: simulators disagree: {r}" for r in agree["reasons"]]
+
+
 def package_verdict(robot_statuses: list[str], gate_statuses: list[str]) -> str:
     """rejected (a gate rejected) > flagged (physics QA) > incomplete (a check not run) > pass."""
     if "reject" in gate_statuses:
@@ -284,6 +313,7 @@ def build_package(
     allow_missing_provenance: bool = False,
     force: bool = False,
     task_profile: Path | None = None,
+    simulators: tuple[str, ...] = ("isaaclab", "mujoco"),
 ) -> Path:
     """Write env_package/v1 for ``run_root`` to ``out``; returns ``out``. Validates before publishing."""
     run_root = run_root.resolve()
@@ -332,14 +362,14 @@ def build_package(
     try:
         return _assemble(run_root, out, staging, sequence, provenance, context, npz, n_frames, bundle,
                          bundle_manifest, tracks_table, tracks, t_tracks, fps, available, selected,
-                         instruction, object_prompt, allow_flagged, force)
+                         instruction, object_prompt, allow_flagged, force, simulators)
     finally:
         shutil.rmtree(staging, ignore_errors=True)  # published packages are renamed away first
 
 
 def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_frames, bundle, bundle_manifest,
               tracks_table, tracks, t_tracks, fps, available, selected, instruction, object_prompt,
-              allow_flagged, force) -> Path:
+              allow_flagged, force, simulators=("isaaclab", "mujoco")) -> Path:
     from .validate import validate_package
 
     workflow = context["workflow"]
@@ -444,10 +474,6 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
         write_json(staging / "qa" / f"{gate}.json", _scrub_paths(data))
         gates[gate] = {"status": status, "report": f"qa/{gate}.json", "reasons": [str(r) for r in data.get("reasons", [])]}
         reasons += [f"{gate}: {r}" for r in gates[gate]["reasons"]]
-    verdict = package_verdict(statuses, [g["status"] for g in gates.values()])
-    if verdict in ("rejected", "flagged") and not allow_flagged:
-        raise ContractError(f"QA {verdict} the clip ({'; '.join(reasons)}); pass --allow-flagged to package it anyway")
-
     task_entry, task_reasons = _task(run_root, staging, sequence, context, first_motion, available, selected,
                                      instruction or workflow.get("instruction"), env_id)
     for reason in task_reasons:  # the package is still valid; --strict (delivery) requires the task
@@ -513,16 +539,24 @@ def _assemble(run_root, out, staging, sequence, provenance, context, npz, n_fram
         "robots": robot_entries,
         "task": task_entry,
         "simulators": {},
-        "qa": {"verdict": verdict, "reasons": reasons, "gates": gates},
+        "qa": {"verdict": None, "reasons": reasons, "gates": gates},
         "files": [],
     }
     if task_entry is not None:
         from .isaaclab import export_isaaclab
 
         revision = provenance["stages"].get("simulate", {}).get("revision") or provenance["builder"]["revision"]
-        manifest["simulators"]["isaaclab"] = export_isaaclab(staging, manifest, extension_revision=revision)
+        if "isaaclab" in simulators:
+            manifest["simulators"]["isaaclab"] = export_isaaclab(staging, manifest, extension_revision=revision)
+        if "mujoco" in simulators:
+            _mujoco(staging, manifest, reasons)
     else:
-        print("warning: no Isaac Lab export (it needs the task spec)", file=sys.stderr)
+        print("warning: no simulator exports (they need the task spec)", file=sys.stderr)
+    verdict = package_verdict([effective_status(r["qa"]) for r in robot_entries.values()],
+                              [g["status"] for g in gates.values()])
+    if verdict in ("rejected", "flagged") and not allow_flagged:
+        raise ContractError(f"QA {verdict} the clip ({'; '.join(reasons)}); pass --allow-flagged to package it anyway")
+    manifest["qa"]["verdict"] = verdict
     files = sorted(p for p in staging.rglob("*") if p.is_file())
     manifest["files"] = [
         {"path": p.relative_to(staging).as_posix(), "bytes": p.stat().st_size, "sha256": sha256_file(p)} for p in files

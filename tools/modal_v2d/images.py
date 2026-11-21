@@ -447,7 +447,8 @@ RG_ISAAC_WARMUP = (
 
 
 # Triage gate (tools/gates/triage.py): MediaPipe hand landmarker on CPU, model baked in.
-GATE_PYTHON_DEPS = ["mediapipe==1.2.3"]
+# Environment packages (tools/envpkg): parquet, schema validation, the MuJoCo export and replay.
+GATE_PYTHON_DEPS = ["mediapipe==1.2.3", "pyarrow", "jsonschema", "mujoco==3.8.0"]
 HAND_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 )
@@ -468,7 +469,7 @@ def control_image() -> modal.Image:
             f"echo '{HAND_LANDMARKER_SHA256}  /opt/mediapipe_tasks/hand_landmarker.task' | sha256sum -c -",
             # A broken install must fail the build, not the first clip's triage: build the
             # detector and run it once, the way tools/gates/triage.py does.
-            "python -c \"import numpy as np, mediapipe as mp; "
+            "python -c \"import numpy as np, mediapipe as mp, pyarrow, jsonschema, mujoco; "
             "from mediapipe.tasks.python import BaseOptions; "
             "from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode; "
             "d = HandLandmarker.create_from_options(HandLandmarkerOptions(base_options=BaseOptions("

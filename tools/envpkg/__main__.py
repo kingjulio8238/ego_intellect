@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--allow-missing-provenance", action="store_true", help="non-deliverable package without run records")
     build.add_argument("--force", action="store_true", help="replace an existing package")
     build.add_argument("--task-profile", type=Path, help="task profile JSON (default: the run config's contracts.task)")
+    build.add_argument("--simulators", default="isaaclab,mujoco", help="exports to write (comma-separated)")
 
     validate = sub.add_parser("validate", help="validate an env_package/v1 directory")
     validate.add_argument("package", type=Path)
@@ -63,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
                 instruction=args.instruction, object_prompt=args.object_prompt,
                 allow_flagged=args.allow_flagged, allow_missing_provenance=args.allow_missing_provenance,
                 force=args.force, task_profile=args.task_profile,
+                simulators=tuple(x for x in args.simulators.split(",") if x),
             )
             print(f"built {out}")
             return 0

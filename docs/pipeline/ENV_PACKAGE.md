@@ -24,7 +24,8 @@ qa/triage.json, qa/reconstruction.json   gate reports (GATES.md)
 task/task.json                        task_spec/v1: rewards, terminations, success (TASK_SPEC.md)
 task/<robot>/isaaclab_env_spec.json   the resolved Isaac Lab training environment it was built from
 isaaclab/                             Isaac Lab export: env.json + the extension's dataset layout (ISAACLAB_EXPORT.md)
-mujoco/                               added by the MuJoCo exporter (build step E)
+mujoco/                               MuJoCo export: env.json + one MJCF scene per robot (MUJOCO_EXPORT.md)
+qa/<robot>/mujoco_replay.json         the second physics check (MuJoCo)
 ```
 
 Every path inside the package, including the ones stored in parquet files (`raw_motion_file`,
@@ -43,8 +44,8 @@ absolute paths, no `..`, and no symlinks.
 | `core.object.physics` | Mass, centre of mass, inertia, friction. Each value carries its source: `mass_source` is `default_constant` (0.3 kg for every object today), `estimated` or `measured`. Friction is `physx_default` (0.5 / 0.5, restitution 0): the values the physics QA replay ran with |
 | `robots.<robot>` | Robot model id plus the sha256 of its description file; frame; motion (rate, frames, joints); support surfaces; retarget report; QA status (`pass` / `flagged` / `not_run`), flag reasons, completion |
 | `task` | `{"spec": "task/task.json", "schema": "task_spec/v1"}`, or `null` when the clip has no resolved training environment yet ([TASK_SPEC.md](TASK_SPEC.md)) |
-| `simulators` | `{"isaaclab": {"env": "isaaclab/env.json", "schema": "isaaclab_env/v1"}}` once a task spec exists; `mujoco` follows |
-| `qa.verdict` | `flagged` if any robot's replay flagged, `incomplete` if any did not run, else `pass` |
+| `simulators` | `isaaclab` and `mujoco` exports (`{"env": ..., "schema": ...}`) once a task spec exists |
+| `qa.verdict` | `rejected` if a gate rejected; `flagged` if Isaac or MuJoCo flagged a robot's replay or the two disagree; `incomplete` if a check did not run; else `pass` |
 | `files` | Every file except `manifest.json`, with byte size and sha256 |
 
 ## Coordinate frames

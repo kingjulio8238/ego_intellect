@@ -716,6 +716,55 @@
                 "number",
                 "null"
               ]
+            },
+            "mujoco": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "report",
+                "flag_reasons",
+                "completion",
+                "agree",
+                "reasons",
+                "differences",
+                "limits"
+              ],
+              "properties": {
+                "status": {
+                  "enum": [
+                    "pass",
+                    "flagged"
+                  ]
+                },
+                "report": {
+                  "$ref": "#/$defs/path"
+                },
+                "flag_reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "completion": {
+                  "type": "number"
+                },
+                "agree": {
+                  "type": "boolean"
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "differences": {
+                  "type": "object"
+                },
+                "limits": {
+                  "type": "object"
+                }
+              }
             }
           }
         }

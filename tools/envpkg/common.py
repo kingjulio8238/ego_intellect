@@ -20,7 +20,9 @@ SUPPORT_SCHEMA = "support_surfaces/v1"
 INTAKE_SCHEMA = "intake/v1"
 TASK_SCHEMA = "task_spec/v1"
 ISAACLAB_SCHEMA = "isaaclab_env/v1"
+MUJOCO_SCHEMA = "mujoco_env/v1"
 _SCHEMA_FILES = {
+    MUJOCO_SCHEMA: "mujoco_env_v1.schema.json",
     ISAACLAB_SCHEMA: "isaaclab_env_v1.schema.json",
     TASK_SCHEMA: "task_spec_v1.schema.json",
     PACKAGE_SCHEMA: "env_package_v1.schema.json",

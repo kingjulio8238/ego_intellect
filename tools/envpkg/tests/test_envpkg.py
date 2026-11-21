@@ -20,7 +20,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.spatial.transform import Rotation
 
-from tools.envpkg.build import build_package, parse_support_usda
+from tools.envpkg.build import build_package as _build_package
+from tools.envpkg.build import parse_support_usda
+
 from tools.envpkg.common import ContractError, schema_errors, sha256_file
 from tools.envpkg.intake import validate_intake
 from tools.envpkg.success import lift_hold
@@ -28,6 +30,13 @@ from tools.envpkg.task import load_task_spec
 from tools.envpkg.validate import validate_package
 
 REPO = Path(__file__).resolve().parents[3]
+
+
+def build_package(*args, **kwargs):
+    """The builder, with the MuJoCo export off for the 3-joint synthetic robot (its scene needs
+    the real Vega joints; MuJoCoExportTest covers it)."""
+    kwargs.setdefault("simulators", ("isaaclab",))
+    return _build_package(*args, **kwargs)
 SAMPLE_VIDEO = REPO / "reconstruction/assets/tissue_box.mp4"
 SEQ = "box"
 N, FPS, ROBOT_FPS = 91, 30.0, 50.0
@@ -69,11 +78,11 @@ PROFILE = json.loads((REPO / "robotic_grounding/groot_finetune/task_profiles/tis
 ENV_SPEC = json.loads((Path(__file__).parent / "data/env_spec_vega_sharpa.json").read_text())
 
 
-def env_spec(control_steps: int, joints: int, **edit) -> dict:
+def env_spec(control_steps: int, joints: int, names: list[str] | None = None, **edit) -> dict:
     """The real Vega env dump (b3_tbseed), re-dimensioned for the synthetic clip."""
     spec = json.loads(json.dumps(ENV_SPEC))
     spec["runtime"].update(trajectory_end_timestep=control_steps - 1, num_timesteps=control_steps,
-                           action_dim=joints, joint_names=[f"j{i}" for i in range(joints)])
+                           action_dim=joints, joint_names=names or [f"j{i}" for i in range(joints)])
     for key, value in edit.items():
         spec[key] = value
     return spec
@@ -154,6 +163,10 @@ def make_run_root(root: Path, *, flag: bool = False, provenance: bool = False, t
     (root / "simulate/vega/replay_metrics.json").write_text(json.dumps({
         "schema": "v2d_replay_metrics_v1", "flag": flag, "flag_reasons": ["wrist_pos_p95_m"] if flag else [],
         "completion": 0.33,
+        "thresholds": {"settle_object_pos_max_m": 0.025, "rest_object_pos_p95_m": 0.065, "grasp_missed_contact_mean": 0.5,
+                       "grasp_object_pos_p95_m": 0.075, "wrist_pos_p95_m": 0.05, "grasp_drift_p95_m": 0.041},
+        "checks": {"settle_object_pos_max_m": 0.01, "rest_object_pos_p95_m": 0.02, "grasp_missed_contact_mean": 0.0,
+                   "grasp_object_pos_p95_m": 0.03, "wrist_pos_p95_m": 0.02, "grasp_drift_p95_m": 0.02},
     }))
     if with_env_spec:
         steps = int(round((N - 1) / FPS / 0.025)) + 1
@@ -446,6 +459,88 @@ class PackageTest(unittest.TestCase):
 
 def _file_entry(path: Path, rel: str) -> dict:
     return {"path": rel, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size}
+
+
+class MuJoCoExportTest(unittest.TestCase):
+    """The MuJoCo export and replay on the real Vega robot (static pose, object on its support)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        git = mock.patch("tools.envpkg.build.git_state", return_value=("f" * 40, False))
+        git.start()
+        self.addCleanup(git.stop)
+
+    def vega_run(self) -> Path:
+        """The synthetic clip on the real Vega robot: the robot holds its default pose, the object
+        starts resting on a support disk placed under it (robot frame) and its reference lifts."""
+        import mujoco
+
+        from tools.envpkg.mujoco_export import _robot_spec
+
+        run = make_run_root(self.tmp / "run", provenance=True)
+        names = ENV_SPEC["runtime"]["joint_names"]
+        pose = ENV_SPEC["robot"]["init_state"]["joint_pos"]
+        q = np.array([pose.get(n, 0.0) for n in names])
+        urdf = REPO / "robotic_grounding/source/robotic_grounding/robotic_grounding/assets/urdfs/vega_sharpa/vega_sharpa_reduced.urdf"
+        spec, _, _ = _robot_spec(urdf, "assets")
+        model = spec.compile()
+        data = mujoco.MjData(model)
+        for name, value in zip(names, q):
+            data.qpos[model.jnt_qposadr[model.joint(name).id]] = value
+        mujoco.mj_forward(model, data)
+        ee = [np.r_[data.xpos[model.body(b).id], data.xquat[model.body(b).id]] for b in ("L_arm_l7", "R_arm_l7")]
+        path = run / f"human_motion_data/ego_recon/processed/sequence_id={SEQ}/robot_name=vega_sharpa/data.parquet"
+        row = pq.read_table(path).to_pylist()[0]
+        n = len(row["object_root_position"])
+        obj = np.asarray(row["object_root_position"])
+        world_rot = Rotation.from_euler("z", (20 * np.arange(n) / ROBOT_FPS)[:, None], degrees=True)
+        wxyz = (Rotation.from_matrix(T_PLACE[:3, :3]) * world_rot).as_quat()[:, [3, 0, 1, 2]]
+        row.update(
+            robot_joint_names=names, robot_joint_positions=np.tile(q, (n, 1)).tolist(),
+            ee_link_names=["L_arm_l7", "R_arm_l7"], ee_pose_w=np.tile(np.stack(ee), (n, 1, 1)).tolist(),
+            object_body_position=obj[:, None].tolist(), object_body_wxyz=wxyz[:, None].tolist(),
+            hand_contact_active=np.zeros((2, n)).tolist(),
+        )
+        pq.write_table(pa.Table.from_pylist([row]), path)
+        top = obj[0][2] - 0.04  # the cube's bottom at frame 0
+        support = run / f"human_motion_data/ego_recon/reconstructed_stage/{SEQ}_vega_sharpa_support.usda"
+        support.write_text(SUPPORT.replace("(0.0, 0.09, 0.75)", f"({obj[0][0]}, {obj[0][1]}, {top - 0.005})"))
+        steps = int(round((N - 1) / FPS / 0.025)) + 1
+        (run / "simulate/vega/env_spec.json").write_text(json.dumps(env_spec(steps, len(names), names)))
+        return run
+
+    def test_scene_and_replay(self) -> None:
+        import mujoco
+
+        package = _build_package(self.vega_run(), self.tmp / "pkg", allow_flagged=True)
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(sorted(manifest["simulators"]), ["isaaclab", "mujoco"])
+        env = json.loads((package / "mujoco/env.json").read_text())["robots"]["vega_sharpa"]
+        model = mujoco.MjModel.from_xml_path(str(package / env["scene"]))
+        self.assertEqual((model.nu, model.njnt), (58, 59))  # 58 servos; robot joints + the object's free joint
+        self.assertEqual(len(env["hand_contact_bodies"]["left"]), len(env["hand_contact_bodies"]["right"]))
+        self.assertEqual(sum(j["delay_physics_steps"] == 4 for j in env["joints"]), 14)  # the arms
+        qa = manifest["robots"]["vega_sharpa"]["qa"]["mujoco"]
+        report = json.loads((package / qa["report"]).read_text())
+        self.assertEqual(report["checks"]["initial_penetration_m"], 0.0)
+        self.assertLess(report["checks"]["settle_object_pos_max_m"], 0.03)  # rests; the reference moves 2.5 cm meanwhile
+        self.assertLess(report["checks"]["wrist_pos_p95_m"], 0.01)  # the servos hold the pose
+        self.assertEqual(report["termination_terms"], ["object_pos_error"])  # the reference lifts away
+        self.assertTrue(report["flag"])  # never reaches a reference contact
+        self.assertFalse(qa["agree"])  # ... while the fixture's Isaac report passes
+        self.assertEqual(manifest["qa"]["verdict"], "flagged")
+        self.assertTrue(validate_package(package).ok)
+
+    def test_agreement_limits(self) -> None:
+        from tools.envpkg.mujoco_replay import agreement
+
+        isaac = {"flag": False, "completion": 0.33, "checks": {"settle_object_pos_max_m": 0.013, "wrist_pos_p95_m": 0.032}}
+        close = {"flag": False, "completion": 0.32, "checks": {"settle_object_pos_max_m": 0.022, "wrist_pos_p95_m": 0.030}}
+        self.assertTrue(agreement(close, isaac)["agree"])
+        far = {"flag": False, "completion": 0.20, "checks": {"settle_object_pos_max_m": 0.04, "wrist_pos_p95_m": 0.030}}
+        self.assertEqual(len(agreement(far, isaac)["reasons"]), 2)
+        self.assertFalse(agreement({**close, "flag": True}, isaac)["agree"])
 
 
 class IntakeTest(unittest.TestCase):
