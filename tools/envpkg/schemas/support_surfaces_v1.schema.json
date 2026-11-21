@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "support_surfaces/v1",
+  "title": "Support surfaces (support_surfaces/v1)",
+  "description": "Static surfaces the object rests on, simulator-neutral. Today only horizontal disks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "frame", "units", "surfaces"],
+  "properties": {
+    "schema": {"const": "support_surfaces/v1"},
+    "frame": {"type": "string", "pattern": "^robot:[A-Za-z0-9_.-]+$"},
+    "units": {"const": "m"},
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "shape", "center", "axis", "radius", "thickness"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "shape": {"const": "disk"},
+          "center": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+          "axis": {"const": "z"},
+          "radius": {"type": "number", "exclusiveMinimum": 0},
+          "thickness": {"type": "number", "exclusiveMinimum": 0}
+        }
+      }
+    }
+  }
+}

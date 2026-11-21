@@ -11,7 +11,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 
 | # | Stage | `run_e2e.sh` / code | Status | Time now |
 |---|---|---|---|---|
-| 1 | Vendor intake spec (format, intrinsics/IMU, metadata) | — | **To add** | — |
+| 1 | Vendor intake spec (format, intrinsics/IMU, metadata) | `python3 -m tools.envpkg intake` | **Built** (A): `intake/v1` contract + checker ([INTAKE.md](INTAKE.md)) | seconds |
 | 2 | Ingest | `init` (+ per-clip `setup --skip-reconstruction`) | Optimized in batch mode | 7–26 s |
 | 3 | Triage gate (reject bad clips before GPU spend) | — | **To add** | — |
 | 4 | Reconstruct (hands, object, camera bundle) | `reconstruct --fast` | **Optimized** (round 2: −26%, gate PASS; −80% vs stock e2e) | ~7.2 min (was 9.75) |
@@ -21,7 +21,7 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 | 8 | Render overlay (visual check) | `render` (overlay of the physics replay; flagged + 1 in 20, after delivery) | **Optimized** | 0 on the path (was 5.3 min); 20 s per rendered clip |
 | 9 | Solvability check (replaces 13.4 h RL as our QA) | `solvability` (experimental) | **Paused**: test validated, no cheap proof yet ([OPTIMIZATION.md](OPTIMIZATION.md)) | — |
 | 10 | Task / reward spec | — | **To add** | — |
-| 11 | Export / package (Isaac Lab / USD; possibly MuJoCo) | — | **To add** | — |
+| 11 | Export / package (Isaac Lab + MuJoCo) | `python3 -m tools.envpkg build / validate` | **Contract built** (A): `env_package/v1` core + validator ([ENV_PACKAGE.md](ENV_PACKAGE.md)); simulator exporters next (D, E) | seconds (core) |
 | 12 | Delivery to lab | — | **To add** | — |
 
 ## Ours, not per clip
@@ -44,3 +44,17 @@ Times are one 13 s / 390-frame clip (`tissue_box`) on Modal L40S, measured 2026-
 Assumptions that set this scope (change any and the scope changes): labs buy environments, not
 demonstrations; deliverable is robot-agnostic plus a few common robots (Vega + Sharpa today);
 Isaac Lab is the primary simulator.
+
+## Build plan (stages not yet built), 2026-11-21
+
+Decided: build before more speed work; package for Isaac Lab and MuJoCo. In dependency order:
+
+| Step | Builds | Status |
+|---|---|---|
+| A | Package contract + vendor intake spec (stages 1, 11) | **Done**: `tools/envpkg`, [ENV_PACKAGE.md](ENV_PACKAGE.md), [INTAKE.md](INTAKE.md) |
+| B | Triage gate + reconstruction QA thresholds (stages 3, 5) | Todo |
+| C | Task/reward spec per clip (stage 10), written into `manifest.task` | Todo |
+| D | Isaac Lab exporter (`isaaclab/`), replay check equal to `simulate` | Todo |
+| E | MuJoCo exporter (`mujoco/`, starting from `robotic_grounding/flash_chord`), second physics check | Todo |
+| F | Delivery: archive, lab-side verify, `run_e2e.sh export` / `deliver` gated on QA | Todo |
+| G | One end-to-end run on a fresh workspace (founders-78536), with cold setup measured | Todo |
